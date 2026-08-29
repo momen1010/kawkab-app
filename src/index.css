@@ -1,0 +1,21 @@
+/* src/index.css */
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #FFFDF9;
+    color: #1E1E24;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* حركة التمرير السلس وتنقل الصفحات */
+.page-transition {
+  animation: fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
