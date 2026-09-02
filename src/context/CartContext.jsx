@@ -55,6 +55,9 @@ export function CartProvider({ children }) {
   const removeFromCart = (itemKey) => {
     setCartItems((prev) => prev.filter((item) => item.key !== itemKey));
   };
+  const clearCart = () => {
+    setCartItems([]);
+  };
 
   const updateQuantity = (itemKey, newQuantity) => {
     if (newQuantity <= 0) {
