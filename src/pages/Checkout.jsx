@@ -179,24 +179,23 @@ if (orderMethod === 'website') {
 
       message += `🔢 *رقم الطلب:* %23${orderNumber}%0A`;
 
-      // رقم WhatsApp الخاص بالمحل
+      
       const phoneNumber = '201119346488';
 
       const whatsappUrl =
         `https://api.whatsapp.com/send?phone=${phoneNumber}&text=${message}`;
-
-      // فتح WhatsApp
-      window.open(whatsappUrl, '_blank');
-
-      // تفريغ السلة
+      
+      const whatsappWindow = window.open('about:blank', '_blank');
+      
+      if (whatsappWindow) {
+        whatsappWindow.location.href = whatsappUrl;
+      }
+      
       clearCart();
-
-      // الانتقال إلى صفحة تتبع الطلب
-      clearCart();
-
-navigate(
-  `/track-order?orderId=${orderRef.id}`
-);
+      
+      navigate(
+        `/track-order?orderId=${orderRef.id}`
+      );
     } catch (error) {
       console.error(
         'Error saving order:',
