@@ -100,6 +100,7 @@ function AdminDashboard() {
         }
 
         setOrders(ordersData);
+console.log("ORDERS:", ordersData);
         setLoading(false);
       },
       (error) => {
@@ -493,9 +494,17 @@ function AdminDashboard() {
 
               <div>
 
-                <h2 className="text-xl font-black text-[#3D2314]">
-                  الطلبات 📋
-                </h2>
+              <div className="flex items-center gap-3">
+  <h2 className="text-xl font-black text-[#3D2314]">
+    الطلبات 📋
+  </h2>
+
+  {newOrders > 0 && (
+    <span className="min-w-[28px] h-7 px-2 bg-red-500 text-white rounded-full flex items-center justify-center text-xs font-black animate-pulse">
+      {newOrders}
+    </span>
+  )}
+</div>
 
                 <p className="text-sm text-gray-500 mt-1">
                   إدارة الطلبات وتحديث حالتها

@@ -1,7 +1,16 @@
-
+import { useEffect, useState } from 'react';
 import AdminDashboard from './AdminDashboard';
 
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Navigate,
+} from 'react-router-dom';
+
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from './firebase/config';
+
 import { CartProvider, useCart } from './context/CartContext';
 
 import Navbar from './components/Navbar';
@@ -16,6 +25,38 @@ import FirebaseDemo from './components/FirebaseDemo';
 
 import AdminLogin from './AdminLogin';
 
+function ProtectedRoute({ children }) {
+  const [user, setUser] = useState(undefined);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  if (user === undefined) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#FFF8F3]">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#D4AF37] mx-auto mb-4"></div>
+
+          <p className="text-[#3D2314] font-bold">
+            جاري التحقق من تسجيل الدخول...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/admin" replace />;
+  }
+
+  return children;
+}
+
 function AppContent() {
   const { toast } = useCart();
 
@@ -26,15 +67,23 @@ function AppContent() {
     >
       <Routes>
 
-        {/* ========================= */}
-        {/* صفحة تسجيل دخول الأدمن */}
-        {/* ========================= */}
-        <Route path="/admin" element={<AdminLogin />} />
-        <Route path="/admin/dashboard" element={<AdminDashboard />} />
+        {/* Admin Login */}
+        <Route
+          path="/admin"
+          element={<AdminLogin />}
+        />
 
-        {/* ========================= */}
-        {/* الموقع العادي */}
-        {/* ========================= */}
+        {/* Protected Admin Dashboard */}
+        <Route
+          path="/admin/dashboard"
+          element={
+            <ProtectedRoute>
+              <AdminDashboard />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Website */}
         <Route
           path="*"
           element={
@@ -46,6 +95,7 @@ function AppContent() {
                   <Route path="/" element={<Home />} />
                   <Route path="/menu" element={<Menu />} />
                   <Route path="/checkout" element={<Checkout />} />
+
                   <Route
                     path="/firebase-demo"
                     element={<FirebaseDemo />}
@@ -59,7 +109,6 @@ function AppContent() {
 
               <FloatingCartButton />
 
-              {/* Toast */}
               {toast && (
                 <div className="fixed top-24 left-1/2 -translate-x-1/2 sm:top-auto sm:left-auto sm:translate-x-0 sm:bottom-6 sm:right-6 z-50 animate-bounce">
                   <div className="bg-white/95 backdrop-blur-md border border-orange-100 shadow-2xl rounded-2xl p-4 flex items-center gap-3 border-r-4 border-r-[#E11383]">
@@ -75,6 +124,7 @@ function AppContent() {
                   </div>
                 </div>
               )}
+
             </>
           }
         />

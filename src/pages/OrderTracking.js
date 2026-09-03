@@ -204,9 +204,7 @@ export default function OrderTracking() {
               تم إلغاء الطلب
             </h1>
 
-            <p className="text-xs text-gray-500 mb-6">
-              رقم الطلب: #{order.id.slice(0, 8)}
-            </p>
+            رقم الطلب: #{order.orderNumber}
 
             <div className="bg-red-50 p-4 rounded-2xl border border-red-100 text-sm font-bold text-red-700">
               نأسف، تم إلغاء هذا الطلب.

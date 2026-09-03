@@ -3,7 +3,13 @@
 import { useState } from 'react';
 import { useCart } from '../context/CartContext';
 import { Link, useNavigate } from 'react-router-dom';
-import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
+import {
+  collection,
+  serverTimestamp,
+  doc,
+  runTransaction,
+  setDoc,
+} from 'firebase/firestore';
 import { db } from '../firebase/config';
 
 export default function Checkout() {
@@ -24,6 +30,7 @@ export default function Checkout() {
   });
 
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [orderMethod, setOrderMethod] = useState(null);
 
   const total = getCartTotal();
   const deliveryFee = deliveryType === 'delivery' ? 20 : 0;
@@ -80,11 +87,38 @@ export default function Checkout() {
         createdAt: serverTimestamp(),
       };
 
-      // حفظ الطلب في Firestore
-      const orderRef = await addDoc(
-        collection(db, 'orders'),
-        orderData
-      );
+      // إنشاء رقم طلب متسلسل: 1 → 2 → 3 → 4...
+const counterRef = doc(db, 'counters', 'orderNumber');
+
+const orderNumber = await runTransaction(db, async (transaction) => {
+  const counterSnap = await transaction.get(counterRef);
+
+  const lastNumber = counterSnap.exists()
+    ? counterSnap.data().value || 0
+    : 0;
+
+  const nextNumber = lastNumber + 1;
+
+  transaction.set(counterRef, {
+    value: nextNumber,
+  });
+
+  return nextNumber;
+});
+
+// حفظ الطلب باستخدام الرقم نفسه كـ Document ID
+const orderRef = doc(db, 'orders', String(orderNumber));
+
+await setDoc(orderRef, {
+  ...orderData,
+  orderNumber,
+});
+
+if (orderMethod === 'website') {
+  clearCart();
+  navigate(`/track-order?orderId=${orderRef.id}`);
+  return;
+}
 
       // =========================
       // تجهيز رسالة WhatsApp
@@ -143,7 +177,7 @@ export default function Checkout() {
 
       message += `✨ *الإجمالي النهائي:* *${grandTotal} ج.م*%0A`;
 
-      message += `🔢 *رقم الطلب:* ${orderRef.id}%0A`;
+      message += `🔢 *رقم الطلب:* %23${orderNumber}%0A`;
 
       // رقم WhatsApp الخاص بالمحل
       const phoneNumber = '201119346488';
@@ -158,9 +192,11 @@ export default function Checkout() {
       clearCart();
 
       // الانتقال إلى صفحة تتبع الطلب
-      navigate(
-        `/track-order?orderId=${orderRef.id}`
-      );
+      clearCart();
+
+navigate(
+  `/track-order?orderId=${orderRef.id}`
+);
     } catch (error) {
       console.error(
         'Error saving order:',
@@ -168,7 +204,7 @@ export default function Checkout() {
       );
 
       alert(
-        'حدث خطأ أثناء إرسال الطلب. تأكد من اتصال الإنترنت وحاول مرة أخرى.'
+        'احلي مسا عليك /ي'
       );
     } finally {
       setIsSubmitting(false);
@@ -314,24 +350,42 @@ export default function Checkout() {
               />
             </div>
 
-            {/* زر الإرسال */}
+            {/* أزرار إرسال الطلب */}
 
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className={`w-full mt-4 text-white py-4 rounded-full font-black text-base shadow-lg transition-all flex items-center justify-center gap-2 ${
-                isSubmitting
-                  ? 'bg-gray-400 cursor-not-allowed'
-                  : 'bg-[#27AE60] hover:bg-[#219653] active:scale-95 cursor-pointer'
-              }`}
-            >
-              <span>
-                {isSubmitting
-                  ? 'جاري إرسال الطلب...'
-                  : 'إرسال الطلب عبر واتساب 💬'}
-              </span>
-            </button>
+<div className="space-y-3 mt-4">
 
+{/* طلب عبر الموقع */}
+<button
+  type="button"
+  onClick={() => {
+    setOrderMethod('website');
+    setTimeout(() => {
+      document.querySelector('form').requestSubmit();
+    }, 0);
+  }}
+  className="w-full bg-[#FF6600] hover:bg-orange-600 text-white py-4 rounded-full font-black text-base shadow-lg transition-all active:scale-95"
+>
+  🛒 طلب من الموقع
+</button>
+
+{/* طلب عبر واتساب */}
+<button
+  type="submit"
+  disabled={isSubmitting}
+  className={`w-full text-white py-4 rounded-full font-black text-base shadow-lg transition-all flex items-center justify-center gap-2 ${
+    isSubmitting
+      ? 'bg-gray-400 cursor-not-allowed'
+      : 'bg-[#27AE60] hover:bg-[#219653] active:scale-95 cursor-pointer'
+  }`}
+>
+  <span>
+    {isSubmitting
+      ? 'جاري إرسال الطلب...'
+      : 'إرسال الطلب عبر واتساب 💬'}
+  </span>
+</button>
+
+</div>
           </form>
 
           {/* =========================

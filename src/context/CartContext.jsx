@@ -89,6 +89,7 @@ export function CartProvider({ children }) {
         removeFromCart,
         updateQuantity,
         getCartTotal,
+        clearCart,
         earnedPoints,
         FREE_DELIVERY_LIMIT,
         toast,
