@@ -125,60 +125,57 @@ if (orderMethod === 'website') {
 
       let message = '';
 
-      message += '*طلب جديد من كوكب السعادة 🍩*%0A';
-      message += '----------------------------%0A';
+message += '*طلب جديد من كوكب السعادة 🍩*\n';
+message += '----------------------------\n';
 
-      message += `👤 *الاسم:* ${formData.name}%0A`;
-      message += `📞 *الهاتف:* ${formData.phone}%0A`;
+message += `👤 *الاسم:* ${formData.name}\n`;
+message += `📞 *الهاتف:* ${formData.phone}\n`;
 
-      if (deliveryType === 'delivery') {
-        message += `📍 *العنوان:* ${formData.address}%0A`;
-      } else {
-        message += '🏪 *نوع الطلب:* استلام من الفرع%0A';
-      }
+if (deliveryType === 'delivery') {
+  message += `📍 *العنوان:* ${formData.address}\n`;
+} else {
+  message += '🏪 *نوع الطلب:* استلام من الفرع\n';
+}
 
-      if (formData.notes.trim() !== '') {
-        message += `📝 *ملاحظات:* ${formData.notes}%0A`;
-      }
+if (formData.notes.trim() !== '') {
+  message += `📝 *ملاحظات:* ${formData.notes}\n`;
+}
 
-      message += '%0A🛒 *تفاصيل الطلب:*%0A';
+message += '\n🛒 *تفاصيل الطلب:*\n';
 
-      cartItems.forEach((item, index) => {
-        const itemTotal =
-          item.product.price * item.quantity;
+cartItems.forEach((item, index) => {
+  const itemTotal =
+    item.product.price * item.quantity;
 
-        message += `${index + 1}. *${item.product.nameAr}* `;
-        message += `(x${item.quantity}) - `;
-        message += `${itemTotal} ج.م%0A`;
+  message += `${index + 1}. *${item.product.nameAr}* `;
+  message += `(x${item.quantity}) - `;
+  message += `${itemTotal} ج.م\n`;
 
-        if (item.options?.size) {
-          message += `   ▫️ الحجم: ${item.options.size}%0A`;
-        }
+  if (item.options?.size) {
+    message += `   ▫️ الحجم: ${item.options.size}\n`;
+  }
 
-        if (
-          item.options?.sauces &&
-          Array.isArray(item.options.sauces) &&
-          item.options.sauces.length > 0
-        ) {
-          message += `   ▫️ الصوصات: ${item.options.sauces.join(
-            '، '
-          )}%0A`;
-        }
-      });
+  if (
+    item.options?.sauces &&
+    Array.isArray(item.options.sauces) &&
+    item.options.sauces.length > 0
+  ) {
+    message += `   ▫️ الصوصات: ${item.options.sauces.join('، ')}\n`;
+  }
+});
 
-      message += '%0A----------------------------%0A';
+message += '\n----------------------------\n';
 
-      message += `💰 *المجموع:* ${total} ج.م%0A`;
+message += `💰 *المجموع:* ${total} ج.م\n`;
 
-      if (deliveryType === 'delivery') {
-        message += `🛵 *التوصيل:* ${deliveryFee} ج.م%0A`;
-      }
+if (deliveryType === 'delivery') {
+  message += `🛵 *التوصيل:* ${deliveryFee} ج.م\n`;
+}
 
-      message += `✨ *الإجمالي النهائي:* *${grandTotal} ج.م*%0A`;
+message += `✨ *الإجمالي النهائي:* *${grandTotal} ج.م*\n`;
+message += `🔢 *رقم الطلب:* #${orderNumber}\n`;
 
-      message += `🔢 *رقم الطلب:* %23${orderNumber}%0A`;
-
-      // رقم WhatsApp الخاص بالمحل
+// رقم WhatsApp الخاص بالمحل
 const phoneNumber = '201119346488';
 
 const whatsappUrl =
