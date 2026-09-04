@@ -115,7 +115,6 @@ await setDoc(orderRef, {
 });
 
 if (orderMethod === 'website') {
-  clearCart();
   navigate(`/track-order?orderId=${orderRef.id}`);
   return;
 }
@@ -185,24 +184,18 @@ const phoneNumber = '201119346488';
 const whatsappUrl =
   `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`;
 
-const isMobile = /Android|iPhone|iPad|iPod/i.test(
-  navigator.userAgent
-);
-
+// تفريغ السلة
 clearCart();
 
-if (isMobile) {
-  // الموبايل
-  window.location.href = whatsappUrl;
-} else {
-  // الكمبيوتر
-  window.open(whatsappUrl, '_blank');
+// فتح WhatsApp
+window.location.href = whatsappUrl;
 
-  // Tracking على الكمبيوتر
+// الانتقال إلى صفحة تتبع الطلب
+setTimeout(() => {
   navigate(
     `/track-order?orderId=${orderRef.id}`
   );
-}
+}, 1000);
     } catch (error) {
       console.error(
         'Error saving order:',
