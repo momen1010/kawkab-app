@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "firebase": "^10.14.1",
+    "firebase-admin": "^14.4.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-router-dom": "^7.14.2"
@@ -27,5 +28,18 @@
     "globals": "^17.5.0",
     "tailwindcss": "^4.2.4",
     "vite": "^8.0.10"
-  }
+  },
+  "description": "This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.",
+  "main": "eslint.config.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/momen1010/kawkab-app.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/momen1010/kawkab-app/issues"
+  },
+  "homepage": "https://github.com/momen1010/kawkab-app#readme"
 }
