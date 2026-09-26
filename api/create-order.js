@@ -1,119 +1,153 @@
 import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { randomUUID } from 'node:crypto';
 
-const app =
-  getApps().length > 0
-    ? getApps()[0]
-    : initializeApp({
-        credential: cert({
-          projectId: process.env.FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(
-            /\\n/g,
-            '\n'
-          ),
-        }),
-      });
+const projectId = process.env.FIREBASE_PROJECT_ID?.trim();
+const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
+const privateKey = process.env.FIREBASE_PRIVATE_KEY
+  ?.replace(/\\n/g, '\n')
+  .trim();
 
-const db = getFirestore(app);
+if (!projectId || !clientEmail || !privateKey) {
+  throw new Error(
+    `Firebase environment variables are missing: projectId=${Boolean(
+      projectId
+    )}, clientEmail=${Boolean(clientEmail)}, privateKey=${Boolean(
+      privateKey
+    )}`
+  );
+}
 
-/*
- * =========================
- * Constants
- * =========================
- */
+if (!getApps().length) {
+  initializeApp({
+    credential: cert({
+      projectId,
+      clientEmail,
+      privateKey,
+    }),
+  });
+}
+
+const db = getFirestore();
 
 const DELIVERY_FEE = 20;
 const FREE_DELIVERY_LIMIT = 150;
 const MAX_ITEM_QUANTITY = 20;
 const MAX_ITEMS = 50;
 
-const MAX_NAME_LENGTH = 100;
-const MAX_PHONE_LENGTH = 20;
-const MAX_ADDRESS_LENGTH = 300;
-const MAX_NOTES_LENGTH = 300;
-const MAX_TRANSACTION_ID_LENGTH = 100;
-
-const VALID_DELIVERY_TYPES = [
-  'delivery',
-  'pickup',
-];
-
-const VALID_PAYMENT_METHODS = [
-  'cash',
-  'vodafone_cash',
-];
-
-const VALID_ORDER_METHODS = [
-  'website',
-  'whatsapp',
-];
-
-/*
- * =========================
- * Helpers
- * =========================
- */
-
-function normalizeText(value, maxLength) {
-  return String(value || '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .slice(0, maxLength);
+function sendJson(res, statusCode, data) {
+  res.status(statusCode).json(data);
 }
 
-function normalizePhone(value) {
-  return String(value || '')
-    .trim()
-    .replace(/[\s()-]/g, '');
+function normalizeText(value) {
+  return String(value ?? '').trim();
 }
 
-function isValidEgyptianPhone(phone) {
-  return /^(?:01\d{9}|\+201\d{9}|201\d{9})$/.test(
-    phone
-  );
+function isValidNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
-function getSafeQuantity(quantity) {
-  const parsed = Number(quantity);
+function normalizeQuantity(value) {
+  const quantity = Number(value);
 
-  if (!Number.isFinite(parsed)) {
+  if (!Number.isFinite(quantity)) {
     return 0;
   }
 
   return Math.min(
-    Math.max(Math.floor(parsed), 1),
+    Math.max(Math.floor(quantity), 1),
     MAX_ITEM_QUANTITY
   );
 }
 
-function createTrackingToken() {
-  return (
-    crypto.randomUUID().replace(/-/g, '') +
-    crypto.randomUUID().replace(/-/g, '')
-  );
+function getDeliveryFee(deliveryType, subtotal) {
+  if (deliveryType !== 'delivery') {
+    return 0;
+  }
+
+  if (subtotal >= FREE_DELIVERY_LIMIT) {
+    return 0;
+  }
+
+  return DELIVERY_FEE;
 }
 
-/*
- * =========================
- * API
- * =========================
- */
+function createTrackingToken() {
+  return `${randomUUID()}${randomUUID()}`.replaceAll('-', '');
+}
+
+function validateCustomer(customer) {
+  if (!customer || typeof customer !== 'object') {
+    return 'بيانات العميل غير صحيحة.';
+  }
+
+  const name = normalizeText(customer.name);
+  const phone = normalizeText(customer.phone);
+  const address = normalizeText(customer.address);
+  const notes = normalizeText(customer.notes);
+
+  if (name.length < 2 || name.length > 100) {
+    return 'الاسم غير صحيح.';
+  }
+
+  if (phone.length < 8 || phone.length > 20) {
+    return 'رقم الهاتف غير صحيح.';
+  }
+
+  if (address.length > 300) {
+    return 'العنوان طويل جدًا.';
+  }
+
+  if (notes.length > 300) {
+    return 'الملاحظات طويلة جدًا.';
+  }
+
+  return null;
+}
+
+function validateItems(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return 'السلة فارغة.';
+  }
+
+  if (items.length > MAX_ITEMS) {
+    return 'عدد المنتجات في الطلب كبير جدًا.';
+  }
+
+  for (const item of items) {
+    if (!item || typeof item !== 'object') {
+      return 'بيانات منتج غير صحيحة.';
+    }
+
+    const productId = normalizeText(item.productId);
+
+    if (!productId || productId.length > 200) {
+      return 'معرف المنتج غير صحيح.';
+    }
+
+    const quantity = normalizeQuantity(item.quantity);
+
+    if (!quantity) {
+      return 'كمية المنتج غير صحيحة.';
+    }
+  }
+
+  return null;
+}
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    return res.status(405).json({
+    return sendJson(res, 405, {
       success: false,
-      message: 'Method not allowed.',
+      error: 'Method not allowed.',
     });
   }
 
   try {
-    /*
-     * =========================
-     * Request body
-     * =========================
-     */
+    const body =
+      req.body && typeof req.body === 'object'
+        ? req.body
+        : {};
 
     const {
       customer,
@@ -122,180 +156,95 @@ export default async function handler(req, res) {
       paymentMethod,
       transactionId,
       orderMethod,
-    } = req.body || {};
+    } = body;
 
-    /*
-     * =========================
-     * Basic validation
-     * =========================
-     */
+    const customerError = validateCustomer(customer);
 
-    if (!customer || typeof customer !== 'object') {
-      return res.status(400).json({
+    if (customerError) {
+      return sendJson(res, 400, {
         success: false,
-        message: 'بيانات العميل غير صالحة.',
+        error: customerError,
       });
     }
 
-    if (
-      !VALID_DELIVERY_TYPES.includes(
-        deliveryType
-      )
-    ) {
-      return res.status(400).json({
+    if (!['delivery', 'pickup'].includes(deliveryType)) {
+      return sendJson(res, 400, {
         success: false,
-        message: 'نوع التوصيل غير صالح.',
-      });
-    }
-
-    if (
-      !Array.isArray(items) ||
-      items.length === 0 ||
-      items.length > MAX_ITEMS
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: 'المنتجات غير صالحة.',
-      });
-    }
-
-    if (
-      !VALID_PAYMENT_METHODS.includes(
-        paymentMethod
-      )
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: 'طريقة الدفع غير صالحة.',
-      });
-    }
-
-    if (
-      !VALID_ORDER_METHODS.includes(
-        orderMethod
-      )
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: 'طريقة إرسال الطلب غير صالحة.',
-      });
-    }
-
-    /*
-     * =========================
-     * Customer validation
-     * =========================
-     */
-
-    const name = normalizeText(
-      customer.name,
-      MAX_NAME_LENGTH
-    );
-
-    const phone = normalizePhone(
-      customer.phone
-    );
-
-    const address =
-      deliveryType === 'delivery'
-        ? normalizeText(
-            customer.address,
-            MAX_ADDRESS_LENGTH
-          )
-        : '';
-
-    const notes = normalizeText(
-      customer.notes,
-      MAX_NOTES_LENGTH
-    );
-
-    if (name.length < 2) {
-      return res.status(400).json({
-        success: false,
-        message: 'الاسم غير صالح.',
-      });
-    }
-
-    if (
-      phone.length > MAX_PHONE_LENGTH ||
-      !isValidEgyptianPhone(phone)
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: 'رقم الهاتف غير صالح.',
+        error: 'طريقة الاستلام غير صحيحة.',
       });
     }
 
     if (
       deliveryType === 'delivery' &&
-      address.length < 5
+      normalizeText(customer.address).length === 0
     ) {
-      return res.status(400).json({
+      return sendJson(res, 400, {
         success: false,
-        message: 'عنوان التوصيل غير صالح.',
+        error: 'عنوان التوصيل مطلوب.',
       });
     }
 
-    /*
-     * =========================
-     * Payment validation
-     * =========================
-     */
+    const itemsError = validateItems(items);
+
+    if (itemsError) {
+      return sendJson(res, 400, {
+        success: false,
+        error: itemsError,
+      });
+    }
+
+    if (!['cash', 'vodafone_cash'].includes(paymentMethod)) {
+      return sendJson(res, 400, {
+        success: false,
+        error: 'طريقة الدفع غير صحيحة.',
+      });
+    }
 
     const safeTransactionId =
       paymentMethod === 'vodafone_cash'
-        ? normalizeText(
-            transactionId,
-            MAX_TRANSACTION_ID_LENGTH
-          )
+        ? normalizeText(transactionId)
         : '';
 
-    if (
-      paymentMethod === 'vodafone_cash' &&
-      safeTransactionId.length < 3
-    ) {
-      return res.status(400).json({
+    if (safeTransactionId.length > 100) {
+      return sendJson(res, 400, {
         success: false,
-        message:
-          'رقم عملية Vodafone Cash غير صالح.',
+        error: 'رقم العملية غير صحيح.',
+      });
+    }
+
+    if (!['website', 'whatsapp'].includes(orderMethod)) {
+      return sendJson(res, 400, {
+        success: false,
+        error: 'طريقة إرسال الطلب غير صحيحة.',
       });
     }
 
     /*
-     * =========================
-     * Read trusted products
-     * =========================
+     * ---------------------------------------------------------
+     * READ TRUSTED PRODUCTS FROM FIRESTORE
+     * ---------------------------------------------------------
      *
-     * IMPORTANT:
-     * Prices come ONLY from Firestore.
-     * Client prices are completely ignored.
+     * لا نثق في:
+     * - السعر القادم من العميل
+     * - اسم المنتج القادم من العميل
+     * - subtotal
+     * - deliveryFee
+     * - total
+     *
+     * السيرفر يقرأ الأسعار الحقيقية من Firestore.
      */
 
     const productIds = [
       ...new Set(
-        items.map((item) =>
-          String(item?.productId || '')
-        )
+        items.map((item) => normalizeText(item.productId))
       ),
     ];
 
-    if (
-      productIds.some(
-        (productId) => !productId
+    const productSnapshots = await Promise.all(
+      productIds.map((productId) =>
+        db.collection('products').doc(productId).get()
       )
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: 'يوجد منتج غير صالح.',
-      });
-    }
-
-    const productRefs = productIds.map((id) =>
-      db.collection('products').doc(id)
     );
-
-    const productSnapshots =
-      await db.getAll(...productRefs);
 
     const productsMap = new Map();
 
@@ -308,254 +257,172 @@ export default async function handler(req, res) {
       }
     });
 
-    /*
-     * =========================
-     * Calculate trusted items
-     * =========================
-     */
-
     const trustedItems = [];
 
-    let subtotal = 0;
-
     for (const item of items) {
-      const productId = String(
-        item.productId || ''
-      );
+      const productId = normalizeText(item.productId);
+      const quantity = normalizeQuantity(item.quantity);
 
-      const product =
-        productsMap.get(productId);
+      const product = productsMap.get(productId);
 
       if (!product) {
-        return res.status(400).json({
+        return sendJson(res, 400, {
           success: false,
-          message:
-            'أحد المنتجات لم يعد متاحًا.',
-        });
-      }
-
-      const quantity = getSafeQuantity(
-        item.quantity
-      );
-
-      if (
-        quantity < 1 ||
-        quantity > MAX_ITEM_QUANTITY
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            'كمية أحد المنتجات غير صالحة.',
+          error: `المنتج غير موجود: ${productId}`,
         });
       }
 
       const price = Number(product.price);
 
-      if (
-        !Number.isFinite(price) ||
-        price < 0
-      ) {
-        return res.status(500).json({
+      if (!isValidNumber(price) || price < 0) {
+        return sendJson(res, 500, {
           success: false,
-          message:
-            'سعر أحد المنتجات غير صالح.',
+          error: 'يوجد منتج بسعر غير صالح في قاعدة البيانات.',
         });
       }
 
-      const itemTotal =
-        price * quantity;
-
-      subtotal += itemTotal;
+      const safeOptions =
+        item.options &&
+        typeof item.options === 'object' &&
+        !Array.isArray(item.options)
+          ? item.options
+          : {};
 
       trustedItems.push({
         productId,
-        name: normalizeText(
-          product.nameAr,
-          200
-        ),
+        name:
+          normalizeText(product.nameAr) ||
+          normalizeText(product.name) ||
+          'منتج',
         price,
         quantity,
-        options:
-          item.options &&
-          typeof item.options === 'object'
-            ? item.options
-            : {},
+        options: safeOptions,
       });
     }
 
     /*
-     * =========================
-     * Delivery
-     * =========================
+     * ---------------------------------------------------------
+     * SERVER-SIDE TOTAL CALCULATION
+     * ---------------------------------------------------------
      */
 
-    const deliveryFee =
-      deliveryType === 'delivery'
-        ? subtotal >= FREE_DELIVERY_LIMIT
-          ? 0
-          : DELIVERY_FEE
-        : 0;
+    const subtotal = trustedItems.reduce(
+      (sum, item) => {
+        return sum + item.price * item.quantity;
+      },
+      0
+    );
 
-    const total =
-      subtotal + deliveryFee;
+    const deliveryFee = getDeliveryFee(
+      deliveryType,
+      subtotal
+    );
 
-    /*
-     * =========================
-     * Tracking
-     * =========================
-     */
+    const total = subtotal + deliveryFee;
 
-    const trackingToken =
-      createTrackingToken();
+    const trackingToken = createTrackingToken();
 
     /*
-     * =========================
-     * Order number
-     * =========================
+     * ---------------------------------------------------------
+     * CREATE ORDER NUMBER + ORDER + TRACKING
+     * ---------------------------------------------------------
      */
 
     const counterRef = db
       .collection('counters')
       .doc('orderNumber');
 
-    const orderNumber =
-      await db.runTransaction(
-        async (transaction) => {
-          const counterSnap =
-            await transaction.get(
-              counterRef
-            );
-
-          let currentValue = 0;
-
-          if (counterSnap.exists) {
-            const storedValue = Number(
-              counterSnap.data()?.value
-            );
-
-            if (
-              Number.isFinite(
-                storedValue
-              ) &&
-              storedValue >= 0
-            ) {
-              currentValue =
-                Math.floor(
-                  storedValue
-                );
-            }
-          }
-
-          const nextNumber =
-            currentValue + 1;
-
-          transaction.set(
-            counterRef,
-            {
-              value: nextNumber,
-              updatedAt:
-                FieldValue.serverTimestamp(),
-            },
-            {
-              merge: true,
-            }
-          );
-
-          return nextNumber;
-        }
-      );
-
-    /*
-     * =========================
-     * Order
-     * =========================
-     */
-
-    const orderRef = db
-      .collection('orders')
-      .doc();
-
-    const orderData = {
-      orderNumber,
-
-      trackingToken,
-
-      customer: {
-        name,
-        phone,
-        address,
-        notes,
-      },
-
-      deliveryType,
-
-      items: trustedItems,
-
-      subtotal,
-
-      deliveryFee,
-
-      total,
-
-      status: 'new',
-
-      payment: {
-        method: paymentMethod,
-
-        transactionId:
-          safeTransactionId,
-
-        status:
-          paymentMethod === 'vodafone_cash'
-            ? 'pending'
-            : 'cash_on_delivery',
-      },
-
-      orderMethod,
-
-      createdAt:
-        FieldValue.serverTimestamp(),
-    };
-
-    /*
-     * =========================
-     * Tracking
-     * =========================
-     */
+    const orderRef = db.collection('orders').doc();
 
     const trackingRef = db
       .collection('orderTracking')
       .doc(trackingToken);
 
-    /*
-     * Write both documents together
-     */
+    let orderNumber;
 
-    const batch = db.batch();
+    await db.runTransaction(async (transaction) => {
+      const counterSnapshot =
+        await transaction.get(counterRef);
 
-    batch.set(
-      orderRef,
-      orderData
-    );
+      if (!counterSnapshot.exists) {
+        orderNumber = 1;
 
-    batch.set(
-      trackingRef,
-      {
+        transaction.set(counterRef, {
+          value: 1,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      } else {
+        const currentValue = Number(
+          counterSnapshot.data()?.value
+        );
+
+        if (
+          !Number.isInteger(currentValue) ||
+          currentValue < 0
+        ) {
+          throw new Error(
+            'Order number counter is invalid.'
+          );
+        }
+
+        orderNumber = currentValue + 1;
+
+        transaction.update(counterRef, {
+          value: orderNumber,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      const orderData = {
+        orderNumber,
+
+        trackingToken,
+
+        customer: {
+          name: normalizeText(customer.name),
+          phone: normalizeText(customer.phone),
+          address: normalizeText(customer.address),
+          notes: normalizeText(customer.notes),
+        },
+
+        deliveryType,
+
+        items: trustedItems,
+
+        subtotal,
+
+        deliveryFee,
+
+        total,
+
+        status: 'new',
+
+        payment: {
+          method: paymentMethod,
+          transactionId: safeTransactionId,
+          status:
+            paymentMethod === 'cash'
+              ? 'cash_on_delivery'
+              : 'pending',
+        },
+
+        orderMethod,
+
+        createdAt: FieldValue.serverTimestamp(),
+      };
+
+      const trackingData = {
         status: 'new',
         deliveryType,
         total,
-      }
-    );
+      };
 
-    await batch.commit();
+      transaction.set(orderRef, orderData);
 
-    /*
-     * =========================
-     * Response
-     * =========================
-     */
+      transaction.set(trackingRef, trackingData);
+    });
 
-    return res.status(200).json({
+    return sendJson(res, 200, {
       success: true,
 
       orderNumber,
@@ -571,15 +438,11 @@ export default async function handler(req, res) {
       items: trustedItems,
     });
   } catch (error) {
-    console.error(
-      'Create order API error:',
-      error
-    );
+    console.error('Create order API error:', error);
 
-    return res.status(500).json({
+    return sendJson(res, 500, {
       success: false,
-      message:
-        'حدث خطأ أثناء إنشاء الطلب.',
+      error: 'تعذر إنشاء الطلب. حاول مرة أخرى.',
     });
   }
 }
