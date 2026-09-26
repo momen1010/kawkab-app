@@ -1,6 +1,10 @@
+
 import { useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
+
+const VODAFONE_CASH_NUMBER = '01119346488';
+const WHATSAPP_NUMBER = '201119346488';
 
 function getSafePrice(value) {
   const price = Number(value);
@@ -14,8 +18,6 @@ function getSafePrice(value) {
 
 const DELIVERY_FEE = 20;
 const FREE_DELIVERY_LIMIT = 150;
-const VODAFONE_CASH_NUMBER = '01119346488';
-const WHATSAPP_NUMBER = '201119346488';
 
 function normalizeText(value) {
   return String(value ?? '').trim();
@@ -61,14 +63,14 @@ function buildWhatsAppMessage({
 
   const trackingUrl = `${window.location.origin}/track-order?token=${trackingToken}`;
 
-  let paymentText = '💵 الدفع عند الاستلام';
+  const paymentText =
+    paymentMethod === 'vodafone_cash'
+      ? `📱 *الدفع:* Vodafone Cash
+💳 *رقم العملية:* ${transactionId}
+📞 *رقم Vodafone Cash:* ${VODAFONE_CASH_NUMBER}
 
-  if (paymentMethod === 'vodafone_cash') {
-    paymentText = `📱 *Vodafone Cash*
-💳 *التحويل إلى:* ${VODAFONE_CASH_NUMBER}
-🔢 *رقم العملية:* ${transactionId || 'غير مذكور'}
-📸 *سيتم إرسال صورة التحويل مع هذه الرسالة.*`;
-  }
+📸 *مهم:* برجاء إرسال صورة التحويل في نفس المحادثة بعد إرسال الطلب.`
+      : `💵 *الدفع:* الدفع عند الاستلام`;
 
   return `
 🌟 *طلب جديد - كوكب السعادة* 🌟
@@ -78,15 +80,14 @@ function buildWhatsAppMessage({
 📍 *العنوان:* ${address || 'استلام من الفرع'}
 📝 *ملاحظات:* ${notes || 'لا يوجد'}
 
-💳 *طريقة الدفع:*
-${paymentText}
-
 🛒 *الطلبات:*
 ${itemsText}
 
 💰 *الإجمالي قبل التوصيل:* ${subtotal} ج.م
 🚚 *التوصيل:* ${calculatedDeliveryFee} ج.م
 💵 *الإجمالي النهائي:* ${calculatedGrandTotal} ج.م
+
+${paymentText}
 
 🔎 *تتبع الطلب:*
 ${trackingUrl}
@@ -111,7 +112,6 @@ export default function Checkout() {
 
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [transactionId, setTransactionId] = useState('');
-  const [transferImage, setTransferImage] = useState(null);
 
   const [orderMethod, setOrderMethod] = useState('website');
 
@@ -133,14 +133,24 @@ export default function Checkout() {
   const cartIsEmpty = cartItems.length === 0;
 
   const canSubmit = useMemo(() => {
-    return (
+    const basicValid =
       normalizeText(name).length >= 2 &&
       normalizeText(phone).length >= 8 &&
       (deliveryType === 'pickup' ||
         normalizeText(address).length > 0) &&
       cartItems.length > 0 &&
-      !isSubmitting
-    );
+      !isSubmitting;
+
+    if (!basicValid) return false;
+
+    if (paymentMethod === 'vodafone_cash') {
+      return (
+        normalizeText(transactionId).length > 0 &&
+        orderMethod === 'whatsapp'
+      );
+    }
+
+    return true;
   }, [
     name,
     phone,
@@ -148,73 +158,10 @@ export default function Checkout() {
     deliveryType,
     cartItems.length,
     isSubmitting,
+    paymentMethod,
+    transactionId,
+    orderMethod,
   ]);
-
-  function handleTransferImageChange(event) {
-    const file = event.target.files?.[0];
-
-    if (!file) {
-      setTransferImage(null);
-      return;
-    }
-
-    if (!file.type.startsWith('image/')) {
-      setError('من فضلك اختر صورة صحيحة.');
-      setTransferImage(null);
-      return;
-    }
-
-    const maxSize = 8 * 1024 * 1024;
-
-    if (file.size > maxSize) {
-      setError('حجم صورة التحويل يجب ألا يتجاوز 8MB.');
-      setTransferImage(null);
-      return;
-    }
-
-    setError('');
-    setTransferImage(file);
-  }
-
-  async function shareTransferImage({
-    message,
-    file,
-  }) {
-    if (!file) {
-      return false;
-    }
-
-    if (!navigator.share) {
-      return false;
-    }
-
-    try {
-      const shareData = {
-        title: 'طلب كوكب السعادة',
-        text: message,
-        files: [file],
-      };
-
-      if (
-        navigator.canShare &&
-        !navigator.canShare({ files: [file] })
-      ) {
-        return false;
-      }
-
-      await navigator.share(shareData);
-
-      return true;
-    } catch (shareError) {
-      /*
-       * المستخدم ممكن يقفل Share Sheet بنفسه.
-       * في الحالة دي نرجع false ونفتح WhatsApp بالطريقة العادية.
-       */
-      console.log('File sharing cancelled or unavailable:', shareError);
-
-      return false;
-    }
-  }
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -254,28 +201,23 @@ export default function Checkout() {
       return;
     }
 
-    /*
-     * Vodafone Cash:
-     * صورة التحويل لا يتم رفعها إلى Firebase.
-     * سيتم استخدامها عند مشاركة الطلب عبر WhatsApp.
-     */
     if (paymentMethod === 'vodafone_cash') {
       if (!cleanTransactionId) {
         setError('من فضلك أدخل رقم عملية Vodafone Cash.');
         return;
       }
 
-      if (!transferImage) {
-        setError('من فضلك اختر صورة التحويل.');
-        return;
-      }
-
       if (orderMethod !== 'whatsapp') {
         setError(
-          'لإرسال صورة التحويل، اختر "WhatsApp" كطريقة إرسال الطلب.'
+          'للدفع عبر Vodafone Cash، يجب إرسال الطلب عبر WhatsApp لإرسال صورة التحويل.'
         );
         return;
       }
+    }
+
+    if (!['website', 'whatsapp'].includes(orderMethod)) {
+      setError('طريقة إرسال الطلب غير صحيحة.');
+      return;
     }
 
     setIsSubmitting(true);
@@ -336,7 +278,7 @@ export default function Checkout() {
       }
 
       /*
-       * هنا نستخدم بيانات السيرفر فقط.
+       * نستخدم بيانات السيرفر فقط في الإجمالي والمنتجات.
        */
       const serverItems = Array.isArray(data.items)
         ? data.items
@@ -353,11 +295,6 @@ export default function Checkout() {
         );
       }
 
-      /*
-       * =========================
-       * WhatsApp
-       * =========================
-       */
       if (orderMethod === 'whatsapp') {
         const message = buildWhatsAppMessage({
           items: serverItems,
@@ -373,56 +310,16 @@ export default function Checkout() {
           transactionId: cleanTransactionId,
         });
 
-        /*
-         * إذا Vodafone Cash وهناك صورة:
-         * نحاول استخدام Web Share API لإرسال
-         * الرسالة + الصورة معًا.
-         */
-        if (
-          paymentMethod === 'vodafone_cash' &&
-          transferImage
-        ) {
-          const shared = await shareTransferImage({
-            message,
-            file: transferImage,
-          });
-
-          if (shared) {
-            clearCart();
-            return;
-          }
-        }
-
-        /*
-         * Fallback:
-         * فتح WhatsApp برسالة جاهزة.
-         * العميل سيرفق الصورة يدويًا إذا كان
-         * المتصفح لا يدعم مشاركة الملفات.
-         */
-        const fallbackMessage =
-          paymentMethod === 'vodafone_cash'
-            ? `${message}
-
-📸 *مهم:* من فضلك أرفق صورة التحويل في المحادثة قبل الإرسال.`
-            : message;
-
-        const whatsappUrl =
-          `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(
-            fallbackMessage
-          )}`;
+        const whatsappUrl = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(
+          message
+        )}`;
 
         clearCart();
 
         window.location.href = whatsappUrl;
-
         return;
       }
 
-      /*
-       * =========================
-       * Website Order
-       * =========================
-       */
       clearCart();
 
       navigate(
@@ -581,9 +478,6 @@ export default function Checkout() {
                 </div>
               </section>
 
-              {/* =========================
-                  طريقة الدفع
-              ========================= */}
               <section className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm">
                 <h2 className="text-xl font-black text-[#3D2314] mb-5">
                   طريقة الدفع
@@ -595,7 +489,6 @@ export default function Checkout() {
                     onClick={() => {
                       setPaymentMethod('cash');
                       setTransactionId('');
-                      setTransferImage(null);
                     }}
                     className={`py-4 rounded-xl font-black border transition ${
                       paymentMethod === 'cash'
@@ -623,14 +516,16 @@ export default function Checkout() {
 
                 {paymentMethod === 'vodafone_cash' && (
                   <div className="mt-4 space-y-4">
-                    {/* رقم Vodafone Cash */}
-                    <div className="rounded-2xl bg-[#FFF8F3] border border-orange-100 p-4">
+                    <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
                       <p className="text-sm font-black text-[#3D2314] mb-2">
-                        📱 حوّل المبلغ إلى Vodafone Cash:
+                        📱 رقم Vodafone Cash
                       </p>
 
                       <div className="flex items-center justify-between gap-3">
-                        <span className="text-xl sm:text-2xl font-black text-[#FF6600] tracking-wider">
+                        <span
+                          dir="ltr"
+                          className="text-lg font-black text-[#FF6600]"
+                        >
                           {VODAFONE_CASH_NUMBER}
                         </span>
 
@@ -641,21 +536,16 @@ export default function Checkout() {
                               VODAFONE_CASH_NUMBER
                             );
                           }}
-                          className="text-xs font-black bg-white border border-orange-100 px-3 py-2 rounded-lg text-[#3D2314]"
+                          className="px-3 py-2 rounded-lg bg-white border border-red-200 text-sm font-bold"
                         >
                           نسخ
                         </button>
                       </div>
-
-                      <p className="text-xs text-gray-500 mt-3">
-                        بعد التحويل، احتفظ بصورة من إيصال التحويل.
-                      </p>
                     </div>
 
-                    {/* Transaction ID */}
                     <div>
                       <label className="block text-sm font-black text-[#3D2314] mb-2">
-                        رقم العملية *
+                        رقم العملية
                       </label>
 
                       <input
@@ -669,67 +559,30 @@ export default function Checkout() {
                       />
                     </div>
 
-                    {/* صورة التحويل */}
-                    <div>
-                      <label className="block text-sm font-black text-[#3D2314] mb-2">
-                        صورة التحويل *
-                      </label>
-
-                      <label className="block cursor-pointer rounded-2xl border-2 border-dashed border-orange-200 bg-[#FFF8F3] p-5 text-center hover:border-[#FF6600] transition">
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={handleTransferImageChange}
-                          className="hidden"
-                        />
-
-                        {transferImage ? (
-                          <>
-                            <div className="text-3xl mb-2">
-                              ✅
-                            </div>
-
-                            <p className="text-sm font-black text-[#3D2314] break-all">
-                              {transferImage.name}
-                            </p>
-
-                            <p className="text-xs text-gray-500 mt-1">
-                              اضغط لاختيار صورة أخرى
-                            </p>
-                          </>
-                        ) : (
-                          <>
-                            <div className="text-3xl mb-2">
-                              📸
-                            </div>
-
-                            <p className="text-sm font-black text-[#3D2314]">
-                              اختر صورة التحويل
-                            </p>
-
-                            <p className="text-xs text-gray-500 mt-1">
-                              JPG / PNG — الحد الأقصى 8MB
-                            </p>
-                          </>
-                        )}
-                      </label>
-                    </div>
-
-                    <div className="rounded-xl bg-blue-50 border border-blue-100 p-3">
-                      <p className="text-xs font-bold text-blue-800 leading-6">
-                        💬 سيتم إرسال الطلب عبر WhatsApp.
-                        إذا كان جهازك يدعم مشاركة الملفات، ستظهر
-                        لك نافذة المشاركة لإرسال صورة التحويل
-                        مباشرة مع الرسالة.
+                    <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
+                      <p className="font-black text-[#3D2314] mb-2">
+                        📸 برجاء إرسال صورة التحويل عبر WhatsApp
                       </p>
+
+                      <p className="text-sm text-gray-600 leading-6">
+                        بعد إتمام التحويل، اضغط على إرسال الطلب عبر
+                        WhatsApp وأرسل صورة التحويل في نفس المحادثة
+                        للتأكيد.
+                      </p>
+
+                      <a
+                        href={`https://wa.me/${WHATSAPP_NUMBER}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex mt-3 bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-xl font-black transition"
+                      >
+                        💬 فتح WhatsApp
+                      </a>
                     </div>
                   </div>
                 )}
               </section>
 
-              {/* =========================
-                  طريقة إرسال الطلب
-              ========================= */}
               <section className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm">
                 <h2 className="text-xl font-black text-[#3D2314] mb-5">
                   طريقة إرسال الطلب
@@ -738,17 +591,7 @@ export default function Checkout() {
                 <div className="grid sm:grid-cols-2 gap-3">
                   <button
                     type="button"
-                    onClick={() => {
-                      setOrderMethod('website');
-
-                      if (paymentMethod === 'vodafone_cash') {
-                        setError(
-                          'Vodafone Cash يحتاج إرسال الطلب عبر WhatsApp لإرسال صورة التحويل.'
-                        );
-                      } else {
-                        setError('');
-                      }
-                    }}
+                    onClick={() => setOrderMethod('website')}
                     className={`py-4 rounded-xl font-black border transition ${
                       orderMethod === 'website'
                         ? 'bg-[#FF6600] text-white border-[#FF6600]'
@@ -771,12 +614,13 @@ export default function Checkout() {
                   </button>
                 </div>
 
-                {paymentMethod === 'vodafone_cash' && (
-                  <p className="text-xs text-gray-500 mt-3">
-                    عند اختيار Vodafone Cash، يجب اختيار WhatsApp
-                    حتى يتمكن العميل من إرسال صورة التحويل.
-                  </p>
-                )}
+                {paymentMethod === 'vodafone_cash' &&
+                  orderMethod === 'website' && (
+                    <div className="mt-4 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-2xl p-4 text-sm font-bold">
+                      ⚠️ الدفع عبر Vodafone Cash يحتاج إرسال الطلب
+                      عبر WhatsApp حتى تتمكن من إرسال صورة التحويل.
+                    </div>
+                  )}
               </section>
 
               {error && (
@@ -786,9 +630,6 @@ export default function Checkout() {
               )}
             </div>
 
-            {/* =========================
-                ملخص الطلب
-            ========================= */}
             <aside className="lg:col-span-1">
               <div className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm lg:sticky lg:top-24">
                 <h2 className="text-xl font-black text-[#3D2314] mb-5">
@@ -797,9 +638,7 @@ export default function Checkout() {
 
                 <div className="space-y-4 mb-6">
                   {cartItems.map((item) => {
-                    const price = getSafePrice(
-                      item.product?.price
-                    );
+                    const price = getSafePrice(item.product?.price);
 
                     const quantity = normalizeQuantity(
                       item.quantity
@@ -809,10 +648,7 @@ export default function Checkout() {
 
                     return (
                       <div
-                        key={
-                          item.key ||
-                          item.product?.id
-                        }
+                        key={item.key || item.product?.id}
                         className="flex items-center justify-between gap-3"
                       >
                         <div>
@@ -842,7 +678,6 @@ export default function Checkout() {
 
                   <div className="flex justify-between text-sm font-bold text-gray-600">
                     <span>التوصيل</span>
-
                     <span>
                       {deliveryFee === 0
                         ? 'مجاني'
