@@ -1,4 +1,3 @@
-
 import {
   createContext,
   useCallback,
@@ -8,6 +7,13 @@ import {
   useRef,
   useState,
 } from 'react';
+
+import {
+  collection,
+  onSnapshot,
+} from 'firebase/firestore';
+
+import { db } from '../firebase/config';
 
 const CartContext = createContext(null);
 
@@ -26,12 +32,6 @@ const MAX_ITEM_QUANTITY = 20;
  * =========================
  */
 
-/**
- * Keep quantity within a safe client-side range.
- *
- * This is NOT a security mechanism.
- * Final quantities must still be validated server-side.
- */
 function normalizeQuantity(quantity) {
   const parsed = Number(quantity);
 
@@ -45,13 +45,6 @@ function normalizeQuantity(quantity) {
   );
 }
 
-/**
- * Create a stable representation of product options.
- *
- * JSON.stringify directly can produce different strings
- * for objects containing the same properties in a different
- * insertion order.
- */
 function normalizeOptions(options) {
   if (
     !options ||
@@ -77,8 +70,7 @@ function normalizeOptions(options) {
         value !== null &&
         typeof value === 'object'
       ) {
-        normalized[key] =
-          normalizeOptions(value);
+        normalized[key] = normalizeOptions(value);
         return;
       }
 
@@ -116,8 +108,7 @@ function getSafePrice(product) {
 export function CartProvider({ children }) {
   const [cartItems, setCartItems] = useState([]);
   const [favorites, setFavorites] = useState([]);
-  const [isCartOpen, setIsCartOpen] =
-    useState(false);
+  const [isCartOpen, setIsCartOpen] = useState(false);
   const [toast, setToast] = useState('');
   const [deliveryType, setDeliveryType] =
     useState('delivery');
@@ -125,6 +116,72 @@ export function CartProvider({ children }) {
     useState('');
 
   const toastTimerRef = useRef(null);
+
+  /*
+   * =========================
+   * Sync products with Firestore
+   * =========================
+   *
+   * Keeps product information in the cart
+   * synchronized with Firestore.
+   */
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, 'products'),
+      (snapshot) => {
+        const productsMap = new Map();
+
+        snapshot.docs.forEach((doc) => {
+          productsMap.set(doc.id, {
+            id: doc.id,
+            ...doc.data(),
+          });
+        });
+
+        setCartItems((previousItems) =>
+          previousItems.map((item) => {
+            const latestProduct =
+              productsMap.get(item.product?.id);
+
+            if (!latestProduct) {
+              return item;
+            }
+
+            return {
+              ...item,
+              product: {
+                ...item.product,
+                ...latestProduct,
+              },
+            };
+          })
+        );
+
+        setFavorites((previousFavorites) =>
+          previousFavorites.map((item) => {
+            const latestProduct =
+              productsMap.get(item?.id);
+
+            return latestProduct
+              ? {
+                  ...item,
+                  ...latestProduct,
+                }
+              : item;
+          })
+        );
+      },
+      (error) => {
+        console.error(
+          'Failed to sync products with cart:',
+          error
+        );
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
 
   /*
    * =========================
@@ -169,18 +226,18 @@ export function CartProvider({ children }) {
       setFavorites((previousFavorites) => {
         const exists =
           previousFavorites.some(
-            (item) =>
-              item?.id === product.id
+            (item) => item?.id === product.id
           );
 
         if (exists) {
           showToast(
-            `تم إزالة ${product.nameAr || 'المنتج'} من المفضلة`
+            `تم إزالة ${
+              product.nameAr || 'المنتج'
+            } من المفضلة`
           );
 
           return previousFavorites.filter(
-            (item) =>
-              item?.id !== product.id
+            (item) => item?.id !== product.id
           );
         }
 
@@ -243,8 +300,7 @@ export function CartProvider({ children }) {
       setCartItems((previousItems) => {
         const existingIndex =
           previousItems.findIndex(
-            (item) =>
-              item.key === itemKey
+            (item) => item.key === itemKey
           );
 
         if (existingIndex !== -1) {
@@ -303,8 +359,7 @@ export function CartProvider({ children }) {
 
       setCartItems((previousItems) =>
         previousItems.filter(
-          (item) =>
-            item.key !== itemKey
+          (item) => item.key !== itemKey
         )
       );
     },
@@ -337,9 +392,7 @@ export function CartProvider({ children }) {
         Number(newQuantity);
 
       if (
-        !Number.isFinite(
-          numericQuantity
-        ) ||
+        !Number.isFinite(numericQuantity) ||
         numericQuantity <= 0
       ) {
         setCartItems(
@@ -363,8 +416,7 @@ export function CartProvider({ children }) {
           item.key === itemKey
             ? {
                 ...item,
-                quantity:
-                  safeQuantity,
+                quantity: safeQuantity,
               }
             : item
         )
@@ -378,8 +430,8 @@ export function CartProvider({ children }) {
    * Cart total
    * =========================
    *
-   * This is display/client calculation only.
-   * It must NOT be trusted by Firestore/backend.
+   * Client-side display only.
+   * Never trust this value on the server.
    */
 
   const cartTotal = useMemo(() => {
@@ -394,10 +446,7 @@ export function CartProvider({ children }) {
             item?.quantity
           );
 
-        return (
-          sum +
-          price * quantity
-        );
+        return sum + price * quantity;
       },
       0
     );
@@ -412,16 +461,10 @@ export function CartProvider({ children }) {
    * =========================
    * Loyalty preview
    * =========================
-   *
-   * This only shows estimated points.
-   * It does NOT mean points are stored
-   * or awarded to a customer account.
    */
 
   const earnedPoints = useMemo(() => {
-    return Math.floor(
-      cartTotal / 10
-    );
+    return Math.floor(cartTotal / 10);
   }, [cartTotal]);
 
   /*
@@ -506,4 +549,3 @@ export const useCart = () => {
 
   return context;
 };
-

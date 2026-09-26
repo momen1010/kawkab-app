@@ -1,1240 +1,604 @@
-
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
-import { Link, useNavigate } from 'react-router-dom';
-import {
-  collection,
-  doc,
-  runTransaction,
-  serverTimestamp,
-  setDoc,
-} from 'firebase/firestore';
-import { db } from '../firebase/config';
 
-/*
- * =========================
- * Constants
- * =========================
- */
+function getSafePrice(value) {
+  const price = Number(value);
+
+  if (!Number.isFinite(price) || price < 0) {
+    return 0;
+  }
+
+  return price;
+}
 
 const DELIVERY_FEE = 20;
+const FREE_DELIVERY_LIMIT = 150;
 
-const MAX_NAME_LENGTH = 100;
-const MAX_PHONE_LENGTH = 20;
-const MAX_ADDRESS_LENGTH = 300;
-const MAX_NOTES_LENGTH = 300;
-const MAX_TRANSACTION_ID_LENGTH = 100;
-const MAX_ITEM_QUANTITY = 20;
-
-const WHATSAPP_PHONE = '201119346488';
-const VODAFONE_CASH_PHONE = '01119346488';
-
-/*
- * =========================
- * Helpers
- * =========================
- */
-
-function normalizeText(value, maxLength) {
-  return String(value || '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .slice(0, maxLength);
+function normalizeText(value) {
+  return String(value ?? '').trim();
 }
 
-function normalizePhone(value) {
-  return String(value || '')
-    .trim()
-    .replace(/[\s()-]/g, '');
+function normalizeQuantity(value) {
+  const quantity = Number(value);
+
+  if (!Number.isFinite(quantity)) return 1;
+
+  return Math.min(Math.max(Math.floor(quantity), 1), 20);
 }
 
-function isValidEgyptianPhone(phone) {
-  return /^(?:01\d{9}|\+201\d{9}|201\d{9})$/.test(phone);
-}
+function getDeliveryFee(deliveryType, subtotal) {
+  if (deliveryType !== 'delivery') return 0;
 
-function createTrackingToken() {
-  if (
-    typeof crypto !== 'undefined' &&
-    typeof crypto.randomUUID === 'function'
-  ) {
-    return (
-      crypto.randomUUID().replace(/-/g, '') +
-      crypto.randomUUID().replace(/-/g, '')
-    );
-  }
-
-  const randomPart = Math.random()
-    .toString(36)
-    .slice(2);
-
-  const timePart = Date.now().toString(36);
-
-  return `${randomPart}${timePart}${randomPart}`;
-}
-
-function getSafeQuantity(quantity) {
-  const parsed = Number(quantity);
-
-  if (!Number.isFinite(parsed)) {
-    return 0;
-  }
-
-  return Math.min(
-    Math.max(Math.floor(parsed), 1),
-    MAX_ITEM_QUANTITY
-  );
-}
-
-function getDeliveryFee(
-  deliveryType,
-  subtotal,
-  freeDeliveryLimit
-) {
-  if (deliveryType !== 'delivery') {
-    return 0;
-  }
-
-  if (subtotal >= freeDeliveryLimit) {
-    return 0;
-  }
+  if (subtotal >= FREE_DELIVERY_LIMIT) return 0;
 
   return DELIVERY_FEE;
 }
 
-/*
- * =========================
- * Component
- * =========================
- */
+function generateTrackingToken() {
+  return `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll('-', '');
+}
+
+function buildWhatsAppMessage({
+  items,
+  name,
+  phone,
+  address,
+  notes,
+  subtotal,
+  calculatedDeliveryFee,
+  calculatedGrandTotal,
+  trackingToken,
+}) {
+  const itemsText = items
+    .map((item) => {
+      const itemTotal =
+        Number(item.price || 0) * Number(item.quantity || 0);
+
+      return `• ${item.name} × ${item.quantity} = ${itemTotal} ج.م`;
+    })
+    .join('\n');
+
+  const trackingUrl = `${window.location.origin}/track-order?token=${trackingToken}`;
+
+  return `
+🌟 *طلب جديد - كوكب السعادة* 🌟
+
+👤 *الاسم:* ${name}
+📱 *الهاتف:* ${phone}
+📍 *العنوان:* ${address || 'استلام من الفرع'}
+📝 *ملاحظات:* ${notes || 'لا يوجد'}
+
+🛒 *الطلبات:*
+${itemsText}
+
+💰 *الإجمالي قبل التوصيل:* ${subtotal} ج.م
+🚚 *التوصيل:* ${calculatedDeliveryFee} ج.م
+💵 *الإجمالي النهائي:* ${calculatedGrandTotal} ج.م
+
+🔎 *تتبع الطلب:*
+${trackingUrl}
+`.trim();
+}
 
 export default function Checkout() {
-  const {
-    cartItems,
-    getCartTotal,
-    clearCart,
-    deliveryType,
-    FREE_DELIVERY_LIMIT,
-  } = useCart();
-
   const navigate = useNavigate();
 
-  const formRef = useRef(null);
-  const submissionLock = useRef(false);
+  const {
+    cartItems,
+    clearCart,
+    deliveryType,
+    setDeliveryType,
+    getCartTotal,
+  } = useCart();
 
-  const [formData, setFormData] = useState({
-    name: '',
-    phone: '',
-    address: '',
-    notes: '',
-  });
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [address, setAddress] = useState('');
+  const [notes, setNotes] = useState('');
 
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [orderMethod, setOrderMethod] = useState(null);
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [transactionId, setTransactionId] = useState('');
 
-  /*
-   * =========================
-   * Cart totals
-   * =========================
-   */
+  const [orderMethod, setOrderMethod] = useState('website');
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const formRef = useRef(null);
 
   const rawCartTotal = Number(getCartTotal());
 
-  const total =
-    Number.isFinite(rawCartTotal) && rawCartTotal >= 0
-      ? rawCartTotal
-      : 0;
+  const subtotal = Number.isFinite(rawCartTotal)
+    ? Math.max(rawCartTotal, 0)
+    : 0;
 
-  const deliveryFee = getDeliveryFee(
-    deliveryType,
-    total,
-    FREE_DELIVERY_LIMIT
-  );
+  const deliveryFee = getDeliveryFee(deliveryType, subtotal);
 
-  const grandTotal = total + deliveryFee;
+  const grandTotal = subtotal + deliveryFee;
 
-  /*
-   * =========================
-   * Form change
-   * =========================
-   */
+  const cartIsEmpty = cartItems.length === 0;
 
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  };
-
-  /*
-   * =========================
-   * Validation
-   * =========================
-   */
-
-  const validateForm = () => {
-    const name = normalizeText(
-      formData.name,
-      MAX_NAME_LENGTH
+  const canSubmit = useMemo(() => {
+    return (
+      normalizeText(name).length >= 2 &&
+      normalizeText(phone).length >= 8 &&
+      (deliveryType === 'pickup' || normalizeText(address).length > 0) &&
+      cartItems.length > 0 &&
+      !isSubmitting
     );
-
-    const phone = normalizePhone(formData.phone);
-
-    const address =
-      deliveryType === 'delivery'
-        ? normalizeText(
-            formData.address,
-            MAX_ADDRESS_LENGTH
-          )
-        : '';
-
-    const notes = normalizeText(
-      formData.notes,
-      MAX_NOTES_LENGTH
-    );
-
-    if (!name) {
-      return 'من فضلك أدخل الاسم بالكامل.';
-    }
-
-    if (name.length < 2) {
-      return 'الاسم يجب أن يحتوي على حرفين على الأقل.';
-    }
-
-    if (!phone) {
-      return 'من فضلك أدخل رقم الهاتف.';
-    }
-
-    if (!isValidEgyptianPhone(phone)) {
-      return 'من فضلك أدخل رقم هاتف مصري صحيح.';
-    }
-
-    if (deliveryType === 'delivery' && !address) {
-      return 'من فضلك أدخل عنوان التوصيل.';
-    }
-
-    if (
-      deliveryType === 'delivery' &&
-      address.length < 5
-    ) {
-      return 'من فضلك أدخل عنوان توصيل كامل.';
-    }
-
-    if (
-      paymentMethod === 'vodafone_cash' &&
-      !normalizeText(
-        transactionId,
-        MAX_TRANSACTION_ID_LENGTH
-      )
-    ) {
-      return 'من فضلك أدخل رقم عملية Vodafone Cash.';
-    }
-
-    if (
-      paymentMethod === 'vodafone_cash' &&
-      normalizeText(
-        transactionId,
-        MAX_TRANSACTION_ID_LENGTH
-      ).length < 3
-    ) {
-      return 'رقم عملية Vodafone Cash غير صالح.';
-    }
-
-    if (!cartItems.length) {
-      return 'السلة فارغة.';
-    }
-
-    for (const item of cartItems) {
-      const quantity = getSafeQuantity(item.quantity);
-
-      if (
-        !item?.product?.id ||
-        !item?.product?.nameAr
-      ) {
-        return 'يوجد منتج غير صالح داخل السلة. يرجى تحديث السلة.';
-      }
-
-      if (
-        quantity < 1 ||
-        quantity > MAX_ITEM_QUANTITY
-      ) {
-        return 'كمية أحد المنتجات غير صالحة.';
-      }
-
-      if (
-        !Number.isFinite(
-          Number(item.product.price)
-        ) ||
-        Number(item.product.price) < 0
-      ) {
-        return 'يوجد منتج بسعر غير صالح.';
-      }
-    }
-
-    return null;
-  };
-
-  /*
-   * =========================
-   * Build WhatsApp message
-   * =========================
-   *
-   * IMPORTANT:
-   * Order number and tracking token are NOT
-   * included directly as customer data.
-   */
-
-  const buildWhatsAppMessage = ({
-    items,
+  }, [
     name,
     phone,
     address,
-    notes,
-    subtotal,
-    calculatedDeliveryFee,
-    calculatedGrandTotal,
-    trackingToken,
-  }) => {
-    let message = '';
+    deliveryType,
+    cartItems.length,
+    isSubmitting,
+  ]);
 
-    message += '*طلب جديد من كوكب السعادة 🍩*\n';
-    message += '----------------------------\n';
+  async function handleSubmit(event) {
+    event.preventDefault();
 
-    message += `👤 *الاسم:* ${name}\n`;
-    message += `📞 *الهاتف:* ${phone}\n`;
+    if (isSubmitting) return;
 
-    if (deliveryType === 'delivery') {
-      message += `📍 *العنوان:* ${address}\n`;
-      message += '🛵 *نوع الطلب:* توصيل\n';
-    } else {
-      message += '🏪 *نوع الطلب:* استلام من الفرع\n';
-    }
+    setError('');
 
-    if (notes) {
-      message += `📝 *ملاحظات:* ${notes}\n`;
-    }
+    const customerName = normalizeText(name);
+    const customerPhone = normalizeText(phone);
+    const customerAddress = normalizeText(address);
+    const customerNotes = normalizeText(notes);
 
-    message += '\n🛒 *تفاصيل الطلب:*\n';
-
-    items.forEach((item, index) => {
-      const itemTotal =
-        Number(item.price) *
-        Number(item.quantity);
-
-      message += `${index + 1}. *${item.name}* `;
-      message += `(x${item.quantity}) - `;
-      message += `${itemTotal} ج.م\n`;
-
-      if (item.options?.size) {
-        message += `   ▫️ الحجم: ${item.options.size}\n`;
-      }
-
-      if (
-        Array.isArray(item.options?.sauces) &&
-        item.options.sauces.length > 0
-      ) {
-        message += `   ▫️ الصوصات: ${item.options.sauces.join(
-          '، '
-        )}\n`;
-      }
-    });
-
-    message += '\n----------------------------\n';
-
-    message += `💰 *المجموع:* ${subtotal} ج.م\n`;
-
-    if (deliveryType === 'delivery') {
-      message += `🛵 *التوصيل:* ${
-        calculatedDeliveryFee === 0
-          ? 'مجاني'
-          : `${calculatedDeliveryFee} ج.م`
-      }\n`;
-    }
-
-    message += `✨ *الإجمالي النهائي:* *${calculatedGrandTotal} ج.م*\n`;
-
-    if (paymentMethod === 'vodafone_cash') {
-      message += '💳 *طريقة الدفع:* Vodafone Cash\n';
-      message += `💰 *المبلغ المطلوب:* ${calculatedGrandTotal} ج.م\n`;
-      message += `🔢 *رقم العملية:* ${normalizeText(
-        transactionId,
-        MAX_TRANSACTION_ID_LENGTH
-      )}\n`;
-      message += '🟡 *حالة الدفع:* في انتظار التأكيد\n';
-    } else {
-      message += '💳 *طريقة الدفع:* الدفع عند الاستلام\n';
-    }
-
-    const trackingUrl =
-      `${window.location.origin}/track-order?token=` +
-      encodeURIComponent(trackingToken);
-
-    message += '\n📍 *رابط تتبع الطلب:*\n';
-    message += trackingUrl;
-
-    return message;
-  };
-
-  /*
-   * =========================
-   * Submit
-   * =========================
-   */
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-
-    if (
-      submissionLock.current ||
-      isSubmitting
-    ) {
+    if (customerName.length < 2) {
+      setError('من فضلك أدخل اسم صحيح.');
       return;
     }
 
-    if (!cartItems.length) {
+    if (customerPhone.length < 8) {
+      setError('من فضلك أدخل رقم هاتف صحيح.');
       return;
     }
 
-    const validationError = validateForm();
-
-    if (validationError) {
-      alert(validationError);
+    if (deliveryType === 'delivery' && !customerAddress) {
+      setError('من فضلك أدخل عنوان التوصيل.');
       return;
     }
 
-    if (!orderMethod) {
-      alert('من فضلك اختر طريقة إرسال الطلب.');
+    if (cartIsEmpty) {
+      setError('السلة فارغة.');
       return;
     }
 
-    submissionLock.current = true;
+    if (!['cash', 'vodafone_cash'].includes(paymentMethod)) {
+      setError('طريقة الدفع غير صحيحة.');
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
-      const name = normalizeText(
-        formData.name,
-        MAX_NAME_LENGTH
-      );
-
-      const phone = normalizePhone(
-        formData.phone
-      );
-
-      const address =
-        deliveryType === 'delivery'
-          ? normalizeText(
-              formData.address,
-              MAX_ADDRESS_LENGTH
-            )
-          : '';
-
-      const notes = normalizeText(
-        formData.notes,
-        MAX_NOTES_LENGTH
-      );
-
+      /*
+       * مهم:
+       * لا نرسل السعر أو الإجمالي أو orderNumber أو trackingToken.
+       * السيرفر هو الذي يقرأ الأسعار من Firestore ويحسب الإجمالي.
+       */
       const items = cartItems.map((item) => ({
-        productId: String(item.product.id),
-
-        name: normalizeText(
-          item.product.nameAr,
-          200
-        ),
-
-        price: Number(item.product.price),
-
-        quantity: getSafeQuantity(
-          item.quantity
-        ),
-
+        productId: String(item.product?.id || ''),
+        quantity: normalizeQuantity(item.quantity),
         options:
-          item.options &&
-          typeof item.options === 'object'
+          item.options && typeof item.options === 'object'
             ? item.options
             : {},
       }));
 
-      /*
-       * =========================
-       * Tracking token
-       * =========================
-       *
-       * Used only to connect:
-       *
-       * orders
-       *      ↓
-       * orderTracking
-       *
-       * It is NOT the order number.
-       */
+      if (items.some((item) => !item.productId)) {
+        throw new Error('يوجد منتج غير صالح في السلة.');
+      }
 
-      const trackingToken =
-        createTrackingToken();
-
-      /*
-       * =========================
-       * Private order reference
-       * =========================
-       */
-
-      const orderRef = doc(
-        collection(db, 'orders')
-      );
-
-      /*
-       * =========================
-       * Sequential order number
-       * =========================
-       *
-       * Admin only.
-       */
-
-      const counterRef = doc(
-        db,
-        'counters',
-        'orderNumber'
-      );
-
-      const orderNumber =
-        await runTransaction(
-          db,
-          async (transaction) => {
-            const counterSnap =
-              await transaction.get(
-                counterRef
-              );
-
-            let currentValue = 0;
-
-            if (counterSnap.exists()) {
-              const storedValue = Number(
-                counterSnap.data()?.value
-              );
-
-              if (
-                Number.isFinite(storedValue) &&
-                storedValue >= 0
-              ) {
-                currentValue =
-                  Math.floor(storedValue);
-              }
-            }
-
-            const nextNumber =
-              currentValue + 1;
-
-            transaction.set(
-              counterRef,
-              {
-                value: nextNumber,
-                updatedAt:
-                  serverTimestamp(),
-              },
-              {
-                merge: true,
-              }
-            );
-
-            return nextNumber;
-          }
-        );
-
-      /*
-       * =========================
-       * Order data
-       * =========================
-       */
-
-      const orderData = {
-        /*
-         * Admin-only sequential number.
-         */
-        orderNumber,
-
-        /*
-         * Internal connection between the
-         * private order and public tracking.
-         *
-         * This is NOT shown in the UI.
-         */
-        trackingToken,
-
-        customer: {
-          name,
-          phone,
-          address,
-          notes,
+      const response = await fetch('/api/create-order', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
+        body: JSON.stringify({
+          customer: {
+            name: customerName,
+            phone: customerPhone,
+            address: customerAddress,
+            notes: customerNotes,
+          },
 
-        deliveryType,
+          deliveryType,
 
-        items,
+          items,
 
-        subtotal: total,
-
-        deliveryFee,
-
-        total: grandTotal,
-
-        status: 'new',
-
-        payment: {
-          method: paymentMethod,
+          paymentMethod,
 
           transactionId:
             paymentMethod === 'vodafone_cash'
-              ? normalizeText(
-                  transactionId,
-                  MAX_TRANSACTION_ID_LENGTH
-                )
+              ? normalizeText(transactionId)
               : '',
 
-          status:
-            paymentMethod === 'vodafone_cash'
-              ? 'pending'
-              : 'cash_on_delivery',
-        },
+          orderMethod,
+        }),
+      });
 
-        orderMethod,
+      const data = await response.json().catch(() => null);
 
-        createdAt:
-          serverTimestamp(),
-      };
-
-      /*
-       * =========================
-       * Create private order
-       * =========================
-       */
-
-      await setDoc(
-        orderRef,
-        orderData
-      );
-
-      /*
-       * =========================
-       * Create tracking document
-       * =========================
-       *
-       * Customer sees only the status.
-       * No order number is stored here.
-       */
-
-      await setDoc(
-        doc(
-          db,
-          'orderTracking',
-          trackingToken
-        ),
-        {
-          status: 'new',
-          deliveryType,
-          total: grandTotal,
-        }
-      );
-
-      /*
-       * =========================
-       * Website order
-       * =========================
-       */
-
-      if (orderMethod === 'website') {
-        clearCart();
-
-        navigate(
-          `/track-order?token=${encodeURIComponent(
-            trackingToken
-          )}`,
-          {
-            replace: true,
-          }
+      if (!response.ok || !data?.success) {
+        throw new Error(
+          data?.error || 'تعذر إنشاء الطلب. حاول مرة أخرى.'
         );
-
-        return;
       }
 
       /*
-       * =========================
-       * WhatsApp order
-       * =========================
+       * هنا نستخدم بيانات السيرفر فقط.
        */
+      const serverItems = Array.isArray(data.items)
+        ? data.items
+        : [];
 
-      const message =
-        buildWhatsAppMessage({
-          items,
-          name,
-          phone,
-          address,
-          notes,
-          subtotal: total,
-          calculatedDeliveryFee:
-            deliveryFee,
-          calculatedGrandTotal:
-            grandTotal,
+      const serverSubtotal = Number(data.subtotal || 0);
+      const serverDeliveryFee = Number(data.deliveryFee || 0);
+      const serverTotal = Number(data.total || 0);
+      const trackingToken = data.trackingToken;
+
+      if (!trackingToken) {
+        throw new Error('تم إنشاء الطلب ولكن تعذر الحصول على رابط التتبع.');
+      }
+
+      if (orderMethod === 'whatsapp') {
+        const message = buildWhatsAppMessage({
+          items: serverItems,
+          name: customerName,
+          phone: customerPhone,
+          address: customerAddress,
+          notes: customerNotes,
+          subtotal: serverSubtotal,
+          calculatedDeliveryFee: serverDeliveryFee,
+          calculatedGrandTotal: serverTotal,
           trackingToken,
         });
 
-      const whatsappUrl =
-        `https://wa.me/${WHATSAPP_PHONE}?text=` +
-        encodeURIComponent(message);
+        const whatsappUrl = `https://wa.me/201119346488?text=${encodeURIComponent(
+          message
+        )}`;
+
+        clearCart();
+
+        window.location.href = whatsappUrl;
+        return;
+      }
 
       clearCart();
 
-      window.location.href =
-        whatsappUrl;
-
-    } catch (error) {
-      console.error(
-        'Order creation failed:',
-        error?.code,
-        error?.message
+      navigate(
+        `/track-order?token=${encodeURIComponent(trackingToken)}`
       );
+    } catch (err) {
+      console.error('Order creation failed:', err);
 
-      alert(
-        'حدث خطأ أثناء إرسال الطلب. تأكد من اتصال الإنترنت وحاول مرة أخرى.'
+      setError(
+        err?.message ||
+          'حدث خطأ أثناء إنشاء الطلب. حاول مرة أخرى.'
       );
-
-      submissionLock.current = false;
+    } finally {
       setIsSubmitting(false);
     }
-  };
-
-  /*
-   * =========================
-   * Empty cart
-   * =========================
-   */
-
-  if (cartItems.length === 0) {
-    return (
-      <main
-        className="min-h-screen pt-28 pb-16
-                   bg-[#FFF8F3] text-right"
-        dir="rtl"
-      >
-        <div
-          className="max-w-md mx-auto text-center p-8
-                     bg-white rounded-3xl
-                     border border-orange-100
-                     shadow-sm"
-        >
-          <span
-            className="text-5xl"
-            aria-hidden="true"
-          >
-            🍩
-          </span>
-
-          <h2
-            className="text-2xl font-black
-                       text-[#3D2314]
-                       mt-4 mb-2"
-          >
-            لا يوجد منتجات لإتمام الطلب
-          </h2>
-
-          <p className="text-gray-500 text-sm mb-6">
-            يرجى إضافة بعض المنتجات لسلتك أولاً
-          </p>
-
-          <Link
-            to="/menu"
-            className="bg-[#FF6600] text-white
-                       px-8 py-3 rounded-full
-                       font-black text-sm
-                       shadow-md inline-block
-                       hover:opacity-90 transition"
-          >
-            الذهاب للقائمة
-          </Link>
-        </div>
-      </main>
-    );
   }
-
-  /*
-   * =========================
-   * Checkout UI
-   * =========================
-   */
 
   return (
     <main
-      className="min-h-screen pt-28 pb-16
-                 bg-[#FFF8F3] text-right"
+      className="min-h-screen pt-24 pb-16 bg-[#FFF8F3]"
       dir="rtl"
     >
-      <div className="max-w-3xl mx-auto px-4 sm:px-6">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center mb-8">
+          <span className="bg-[#E11383]/10 text-[#E11383] text-xs sm:text-sm font-black px-4 py-1.5 rounded-full inline-block mb-3">
+            خطوة أخيرة ✨
+          </span>
 
-        <h1
-          className="text-3xl font-black
-                     text-[#3D2314] mb-6"
-        >
-          إتمام الطلب 🚀
-        </h1>
+          <h1 className="text-3xl sm:text-5xl font-black text-[#3D2314]">
+            إتمام <span className="text-[#FF6600]">الطلب</span>
+          </h1>
+        </div>
 
-        <div
-          className="grid grid-cols-1
-                     md:grid-cols-5 gap-6"
-        >
+        {cartIsEmpty ? (
+          <div className="max-w-xl mx-auto bg-white rounded-3xl p-8 text-center border border-orange-100 shadow-sm">
+            <div className="text-5xl mb-4">🛒</div>
 
-          {/* Form */}
+            <h2 className="text-xl font-black text-[#3D2314] mb-2">
+              السلة فارغة
+            </h2>
 
+            <p className="text-sm text-gray-500 mb-6">
+              أضف بعض المنتجات أولاً لإتمام الطلب.
+            </p>
+
+            <button
+              type="button"
+              onClick={() => navigate('/menu')}
+              className="bg-[#FF6600] text-white px-6 py-3 rounded-xl font-black"
+            >
+              العودة للقائمة
+            </button>
+          </div>
+        ) : (
           <form
             ref={formRef}
             onSubmit={handleSubmit}
-            className="md:col-span-3
-                       bg-white p-6 rounded-3xl
-                       border border-orange-100
-                       shadow-sm space-y-4"
+            className="grid lg:grid-cols-3 gap-6"
           >
+            <div className="lg:col-span-2 space-y-6">
+              <section className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm">
+                <h2 className="text-xl font-black text-[#3D2314] mb-5">
+                  بيانات العميل
+                </h2>
 
-            <h2
-              className="text-lg font-extrabold
-                         text-[#3D2314] mb-2"
-            >
-              بيانات الاستلام
-            </h2>
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-black text-[#3D2314] mb-2">
+                      الاسم
+                    </label>
 
-            {/* Name */}
-
-            <div>
-              <label
-                htmlFor="checkout-name"
-                className="block text-xs
-                           font-black text-[#3D2314]
-                           mb-1"
-              >
-                الاسم بالكامل *
-              </label>
-
-              <input
-                id="checkout-name"
-                type="text"
-                name="name"
-                required
-                maxLength={MAX_NAME_LENGTH}
-                value={formData.name}
-                onChange={handleChange}
-                autoComplete="name"
-                placeholder="أدخل اسمك"
-                className="w-full px-4 py-3
-                           rounded-2xl
-                           bg-[#FFF8F3]
-                           border border-orange-100
-                           text-sm
-                           focus:outline-none
-                           focus:border-[#FF6600]"
-              />
-            </div>
-
-            {/* Phone */}
-
-            <div>
-              <label
-                htmlFor="checkout-phone"
-                className="block text-xs
-                           font-black text-[#3D2314]
-                           mb-1"
-              >
-                رقم الهاتف (واتساب) *
-              </label>
-
-              <input
-                id="checkout-phone"
-                type="tel"
-                name="phone"
-                required
-                maxLength={MAX_PHONE_LENGTH}
-                value={formData.phone}
-                onChange={handleChange}
-                autoComplete="tel"
-                inputMode="tel"
-                placeholder="01000000000"
-                className="w-full px-4 py-3
-                           rounded-2xl
-                           bg-[#FFF8F3]
-                           border border-orange-100
-                           text-sm
-                           focus:outline-none
-                           focus:border-[#FF6600]"
-              />
-            </div>
-
-            {/* Address */}
-
-            {deliveryType === 'delivery' && (
-              <div>
-                <label
-                  htmlFor="checkout-address"
-                  className="block text-xs
-                             font-black
-                             text-[#3D2314] mb-1"
-                >
-                  عنوان التوصيل التفصيلي *
-                </label>
-
-                <textarea
-                  id="checkout-address"
-                  name="address"
-                  required
-                  maxLength={MAX_ADDRESS_LENGTH}
-                  rows="2"
-                  value={formData.address}
-                  onChange={handleChange}
-                  autoComplete="street-address"
-                  placeholder="المدينة، الشارع، رقم العمارة والشقة"
-                  className="w-full px-4 py-3
-                             rounded-2xl
-                             bg-[#FFF8F3]
-                             border border-orange-100
-                             text-sm
-                             focus:outline-none
-                             focus:border-[#FF6600]"
-                />
-              </div>
-            )}
-
-            {/* Notes */}
-
-            <div>
-              <label
-                htmlFor="checkout-notes"
-                className="block text-xs
-                           font-black
-                           text-[#3D2314] mb-1"
-              >
-                ملاحظات إضافية (اختياري)
-              </label>
-
-              <input
-                id="checkout-notes"
-                type="text"
-                name="notes"
-                maxLength={MAX_NOTES_LENGTH}
-                value={formData.notes}
-                onChange={handleChange}
-                placeholder="مثال: بدون سكر، الاتصال عند الوصول..."
-                className="w-full px-4 py-3
-                           rounded-2xl
-                           bg-[#FFF8F3]
-                           border border-orange-100
-                           text-sm
-                           focus:outline-none
-                           focus:border-[#FF6600]"
-              />
-            </div>
-
-            {/* Payment */}
-
-            <div className="mt-5">
-
-              <label
-                className="block text-xs
-                           font-black
-                           text-[#3D2314] mb-2"
-              >
-                طريقة الدفع
-              </label>
-
-              <div className="space-y-3">
-
-                {/* Cash */}
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    setPaymentMethod('cash')
-                  }
-                  disabled={isSubmitting}
-                  className={`w-full p-4
-                              rounded-2xl border
-                              text-right
-                              transition-all ${
-                                paymentMethod === 'cash'
-                                  ? 'border-[#FF6600] bg-orange-50'
-                                  : 'border-orange-100 bg-white'
-                              }`}
-                >
-                  <div className="font-black text-[#3D2314]">
-                    💵 الدفع عند الاستلام
+                    <input
+                      type="text"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600]"
+                      placeholder="اسمك"
+                    />
                   </div>
 
-                  <div className="text-xs text-gray-500 mt-1">
-                    ادفع عند استلام الطلب
+                  <div>
+                    <label className="block text-sm font-black text-[#3D2314] mb-2">
+                      رقم الهاتف
+                    </label>
+
+                    <input
+                      type="tel"
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600]"
+                      placeholder="01xxxxxxxxx"
+                    />
                   </div>
-                </button>
-
-                {/* Vodafone */}
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    setPaymentMethod(
-                      'vodafone_cash'
-                    )
-                  }
-                  disabled={isSubmitting}
-                  className={`w-full p-4
-                              rounded-2xl border
-                              text-right
-                              transition-all ${
-                                paymentMethod ===
-                                'vodafone_cash'
-                                  ? 'border-[#E60000] bg-red-50'
-                                  : 'border-orange-100 bg-white'
-                              }`}
-                >
-                  <div className="font-black text-[#3D2314]">
-                    📱 Vodafone Cash
-                  </div>
-
-                  <div className="text-xs text-gray-500 mt-1">
-                    ادفع مقدمًا عن طريق Vodafone Cash
-                  </div>
-                </button>
-
-              </div>
-            </div>
-
-            {/* Vodafone Details */}
-
-            {paymentMethod ===
-              'vodafone_cash' && (
-              <div
-                className="mt-3 p-4
-                           rounded-2xl
-                           bg-red-50
-                           border border-red-100"
-              >
-
-                <div
-                  className="font-black
-                             text-[#3D2314] mb-2"
-                >
-                  📱 الدفع عن طريق Vodafone Cash
                 </div>
 
-                <p className="text-sm text-gray-600 mb-2">
-                  قم بتحويل مبلغ:
-                </p>
+                <div className="mt-4">
+                  <label className="block text-sm font-black text-[#3D2314] mb-2">
+                    طريقة الاستلام
+                  </label>
 
-                <div
-                  className="text-xl font-black
-                             text-[#FF6600] mb-3"
-                >
-                  {grandTotal} ج.م
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setDeliveryType('delivery')}
+                      className={`py-3 rounded-xl font-black border transition ${
+                        deliveryType === 'delivery'
+                          ? 'bg-[#FF6600] text-white border-[#FF6600]'
+                          : 'bg-white text-[#3D2314] border-orange-100'
+                      }`}
+                    >
+                      🚚 توصيل
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setDeliveryType('pickup')}
+                      className={`py-3 rounded-xl font-black border transition ${
+                        deliveryType === 'pickup'
+                          ? 'bg-[#FF6600] text-white border-[#FF6600]'
+                          : 'bg-white text-[#3D2314] border-orange-100'
+                      }`}
+                    >
+                      🏪 استلام
+                    </button>
+                  </div>
                 </div>
 
-                <p className="text-sm text-gray-600">
-                  إلى رقم Vodafone Cash:
-                </p>
+                {deliveryType === 'delivery' && (
+                  <div className="mt-4">
+                    <label className="block text-sm font-black text-[#3D2314] mb-2">
+                      عنوان التوصيل
+                    </label>
 
-                <div
-                  dir="ltr"
-                  className="text-lg font-black
-                             text-[#3D2314]
-                             mt-1 mb-4"
-                >
-                  {VODAFONE_CASH_PHONE}
-                </div>
-
-                <label
-                  htmlFor="transaction-id"
-                  className="block text-xs
-                             font-black
-                             text-[#3D2314] mb-1"
-                >
-                  رقم العملية بعد التحويل *
-                </label>
-
-                <input
-                  id="transaction-id"
-                  type="text"
-                  value={transactionId}
-                  maxLength={
-                    MAX_TRANSACTION_ID_LENGTH
-                  }
-                  onChange={(e) =>
-                    setTransactionId(
-                      e.target.value
-                    )
-                  }
-                  placeholder="أدخل رقم العملية"
-                  required={
-                    paymentMethod ===
-                    'vodafone_cash'
-                  }
-                  disabled={isSubmitting}
-                  className="w-full px-4 py-3
-                             rounded-2xl
-                             bg-white
-                             border border-red-100
-                             text-sm
-                             focus:outline-none
-                             focus:border-[#FF6600]"
-                />
-
-                <p className="text-[11px] text-gray-500 mt-2">
-                  بعد التحويل، اكتب رقم العملية حتى نتمكن من مراجعة الدفع.
-                </p>
-
-              </div>
-            )}
-
-            {/* Order Buttons */}
-
-            <div className="space-y-3 mt-4">
-
-              {/* Website */}
-
-              <button
-                type="button"
-                disabled={isSubmitting}
-                onClick={() => {
-                  setOrderMethod('website');
-
-                  requestAnimationFrame(() => {
-                    formRef.current?.requestSubmit();
-                  });
-                }}
-                className={`w-full
-                            text-white py-4
-                            rounded-full
-                            font-black text-base
-                            shadow-lg
-                            transition-all
-                            active:scale-95 ${
-                              isSubmitting
-                                ? 'bg-gray-400 cursor-not-allowed'
-                                : 'bg-[#FF6600] hover:bg-orange-600'
-                            }`}
-              >
-                🛒 طلب من الموقع
-              </button>
-
-              {/* WhatsApp */}
-
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                onClick={() =>
-                  setOrderMethod('whatsapp')
-                }
-                className={`w-full
-                            text-white py-4
-                            rounded-full
-                            font-black text-base
-                            shadow-lg
-                            transition-all
-                            flex items-center
-                            justify-center gap-2 ${
-                              isSubmitting
-                                ? 'bg-gray-400 cursor-not-allowed'
-                                : 'bg-[#27AE60] hover:bg-[#219653] active:scale-95'
-                            }`}
-              >
-                <span>
-                  {isSubmitting
-                    ? 'جاري إرسال الطلب...'
-                    : 'إرسال الطلب عبر واتساب 💬'}
-                </span>
-              </button>
-
-            </div>
-
-          </form>
-
-          {/* Order Summary */}
-
-          <div
-            className="md:col-span-2
-                       bg-white p-6 rounded-3xl
-                       border border-orange-100
-                       shadow-sm h-fit space-y-4"
-          >
-
-            <h2
-              className="text-lg font-extrabold
-                         text-[#3D2314]
-                         border-b border-orange-50
-                         pb-2"
-            >
-              ملخص الحساب
-            </h2>
-
-            <div
-              className="space-y-2
-                         text-xs font-bold
-                         text-gray-600"
-            >
-
-              <div className="flex justify-between">
-                <span>المشتريات:</span>
-
-                <span
-                  className="text-[#3D2314]
-                             font-black"
-                >
-                  {total} ج.م
-                </span>
-              </div>
-
-              <div className="flex justify-between">
-                <span>التوصيل:</span>
-
-                <span
-                  className="text-[#3D2314]
-                             font-black"
-                >
-                  {deliveryType === 'delivery'
-                    ? deliveryFee === 0
-                      ? 'مجاني'
-                      : `${deliveryFee} ج.م`
-                    : 'مجاني'}
-                </span>
-              </div>
-
-              {deliveryType === 'delivery' &&
-                total < FREE_DELIVERY_LIMIT && (
-                  <p className="text-[11px] text-gray-500 pt-1">
-                    التوصيل يصبح مجانيًا عند الوصول إلى{' '}
-                    {FREE_DELIVERY_LIMIT} ج.م.
-                  </p>
+                    <textarea
+                      value={address}
+                      onChange={(e) => setAddress(e.target.value)}
+                      rows={3}
+                      className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600] resize-none"
+                      placeholder="اكتب عنوان التوصيل بالتفصيل"
+                    />
+                  </div>
                 )}
 
+                <div className="mt-4">
+                  <label className="block text-sm font-black text-[#3D2314] mb-2">
+                    ملاحظات
+                  </label>
+
+                  <textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    rows={3}
+                    className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600] resize-none"
+                    placeholder="أي ملاحظات خاصة بالطلب..."
+                  />
+                </div>
+              </section>
+
+              <section className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm">
+                <h2 className="text-xl font-black text-[#3D2314] mb-5">
+                  طريقة الدفع
+                </h2>
+
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMethod('cash')}
+                    className={`py-4 rounded-xl font-black border transition ${
+                      paymentMethod === 'cash'
+                        ? 'bg-[#FF6600] text-white border-[#FF6600]'
+                        : 'bg-white text-[#3D2314] border-orange-100'
+                    }`}
+                  >
+                    💵 الدفع عند الاستلام
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPaymentMethod('vodafone_cash')
+                    }
+                    className={`py-4 rounded-xl font-black border transition ${
+                      paymentMethod === 'vodafone_cash'
+                        ? 'bg-[#FF6600] text-white border-[#FF6600]'
+                        : 'bg-white text-[#3D2314] border-orange-100'
+                    }`}
+                  >
+                    📱 Vodafone Cash
+                  </button>
+                </div>
+
+                {paymentMethod === 'vodafone_cash' && (
+                  <div className="mt-4">
+                    <label className="block text-sm font-black text-[#3D2314] mb-2">
+                      رقم العملية
+                    </label>
+
+                    <input
+                      type="text"
+                      value={transactionId}
+                      onChange={(e) =>
+                        setTransactionId(e.target.value)
+                      }
+                      className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600]"
+                      placeholder="رقم عملية Vodafone Cash"
+                    />
+                  </div>
+                )}
+              </section>
+
+              <section className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm">
+                <h2 className="text-xl font-black text-[#3D2314] mb-5">
+                  طريقة إرسال الطلب
+                </h2>
+
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setOrderMethod('website')}
+                    className={`py-4 rounded-xl font-black border transition ${
+                      orderMethod === 'website'
+                        ? 'bg-[#FF6600] text-white border-[#FF6600]'
+                        : 'bg-white text-[#3D2314] border-orange-100'
+                    }`}
+                  >
+                    🌐 من الموقع
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setOrderMethod('whatsapp')}
+                    className={`py-4 rounded-xl font-black border transition ${
+                      orderMethod === 'whatsapp'
+                        ? 'bg-[#FF6600] text-white border-[#FF6600]'
+                        : 'bg-white text-[#3D2314] border-orange-100'
+                    }`}
+                  >
+                    💬 WhatsApp
+                  </button>
+                </div>
+              </section>
+
+              {error && (
+                <div className="bg-red-50 border border-red-200 text-red-700 rounded-2xl p-4 font-bold text-sm">
+                  {error}
+                </div>
+              )}
             </div>
 
-            <div
-              className="border-t border-orange-100
-                         pt-3 flex justify-between
-                         items-center"
-            >
+            <aside className="lg:col-span-1">
+              <div className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm lg:sticky lg:top-24">
+                <h2 className="text-xl font-black text-[#3D2314] mb-5">
+                  ملخص الطلب
+                </h2>
 
-              <span
-                className="font-extrabold
-                           text-sm text-[#3D2314]"
-              >
-                الإجمالي:
-              </span>
+                <div className="space-y-4 mb-6">
+                  {cartItems.map((item) => {
+                    const price = getSafePrice(item.product?.price);
 
-              <span
-                className="text-xl font-black
-                           text-[#FF6600]"
-              >
-                {grandTotal} ج.م
-              </span>
+                    const quantity = normalizeQuantity(
+                      item.quantity
+                    );
 
-            </div>
+                    const itemTotal = price * quantity;
 
-          </div>
+                    return (
+                      <div
+                        key={item.key || item.product?.id}
+                        className="flex items-center justify-between gap-3"
+                      >
+                        <div>
+                          <p className="font-black text-[#3D2314] text-sm">
+                            {item.product?.nameAr ||
+                              item.product?.name}
+                          </p>
 
-        </div>
+                          <p className="text-xs text-gray-500">
+                            × {quantity}
+                          </p>
+                        </div>
+
+                        <span className="font-black text-[#FF6600]">
+                          {itemTotal} ج.م
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="border-t border-orange-100 pt-4 space-y-3">
+                  <div className="flex justify-between text-sm font-bold text-gray-600">
+                    <span>المجموع</span>
+                    <span>{subtotal} ج.م</span>
+                  </div>
+
+                  <div className="flex justify-between text-sm font-bold text-gray-600">
+                    <span>التوصيل</span>
+                    <span>
+                      {deliveryFee === 0
+                        ? 'مجاني'
+                        : `${deliveryFee} ج.م`}
+                    </span>
+                  </div>
+
+                  <div className="border-t border-orange-100 pt-3 flex justify-between">
+                    <span className="font-black text-[#3D2314]">
+                      الإجمالي
+                    </span>
+
+                    <span className="font-black text-xl text-[#FF6600]">
+                      {grandTotal} ج.م
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={!canSubmit}
+                  className="w-full mt-6 bg-[#FF6600] hover:bg-[#e85d00] disabled:bg-gray-300 disabled:cursor-not-allowed text-white py-4 rounded-2xl font-black transition"
+                >
+                  {isSubmitting
+                    ? 'جاري إنشاء الطلب...'
+                    : orderMethod === 'whatsapp'
+                    ? 'إرسال الطلب عبر WhatsApp'
+                    : 'تأكيد الطلب'}
+                </button>
+              </div>
+            </aside>
+          </form>
+        )}
       </div>
     </main>
   );

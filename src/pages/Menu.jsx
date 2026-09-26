@@ -1,30 +1,67 @@
 // src/pages/Menu.jsx
-import { useState } from 'react';
-import { products, categories } from '../data/products';
+
+import { useEffect, useState } from 'react';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { db } from '../firebase/config';
+import { categories } from '../data/products';
 import ProductCard from '../components/ProductCard';
 import { useCart } from '../context/CartContext';
 
 export default function Menu() {
+  const [products, setProducts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
   const [selectedCategory, setSelectedCategory] = useState('all');
+
   const { searchQuery, setSearchQuery } = useCart();
 
-  // تصفية المنتجات بناءً على التصنيف والبحث المباشر
+  // تحميل المنتجات من Firestore
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, 'products'),
+      (snapshot) => {
+        const productsData = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+
+        setProducts(productsData);
+        setLoading(false);
+        setError('');
+      },
+      (err) => {
+        console.error('Failed to load products:', err);
+        setError('تعذر تحميل المنتجات. حاول مرة أخرى.');
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // تصفية المنتجات بناءً على التصنيف والبحث
   const filteredProducts = products.filter((p) => {
-    const matchesCategory = selectedCategory === 'all' || p.category === selectedCategory;
-    const matchesSearch = p.nameAr.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          p.name.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesCategory =
+      selectedCategory === 'all' || p.category === selectedCategory;
+
+    const matchesSearch =
+      p.nameAr?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.name?.toLowerCase().includes(searchQuery.toLowerCase());
+
     return matchesCategory && matchesSearch;
   });
 
   return (
     <main className="min-h-screen pt-24 pb-16 bg-[#FFF8F3]" dir="rtl">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        
+
         {/* الهيدر وشريط البحث */}
         <div className="text-center max-w-2xl mx-auto mb-8">
           <span className="bg-[#E11383]/10 text-[#E11383] text-xs sm:text-sm font-black px-4 py-1.5 rounded-full inline-block mb-3">
             منتعش ومعد على الطلب ☕✨
           </span>
+
           <h1 className="text-3xl sm:text-5xl font-black text-[#3D2314] mb-4">
             قائمة <span className="text-[#FF6600]">السعادة</span>
           </h1>
@@ -38,7 +75,11 @@ export default function Menu() {
               placeholder="ابحث عن قهوة، وافل، أوساندوتش..."
               className="w-full px-5 py-3.5 pr-11 rounded-full bg-white border-2 border-orange-100 shadow-sm text-sm font-bold text-[#3D2314] focus:outline-none focus:border-[#FF6600] transition-colors"
             />
-            <span className="absolute top-1/2 -translate-y-1/2 right-4 text-gray-400">🔍</span>
+
+            <span className="absolute top-1/2 -translate-y-1/2 right-4 text-gray-400">
+              🔍
+            </span>
+
             {searchQuery && (
               <button
                 onClick={() => setSearchQuery('')}
@@ -57,7 +98,11 @@ export default function Menu() {
               <span className="bg-white text-[#E11383] text-xs font-black px-3 py-1 rounded-full inline-block mb-2">
                 عرض اليوم 🔥
               </span>
-              <h2 className="text-2xl sm:text-3xl font-black mb-2">باكج السعادة الكامل 🍩☕</h2>
+
+              <h2 className="text-2xl sm:text-3xl font-black mb-2">
+                باكج السعادة الكامل 🍩☕
+              </h2>
+
               <p className="text-xs sm:text-sm text-white/90 mb-4 font-medium">
                 احصل على وافل نوتيلا كبير + أسبانيش لاتيه وسط بسعر 99 ج.م بدلاً من 135 ج.م!
               </p>
@@ -69,6 +114,7 @@ export default function Menu() {
         <div className="flex items-center justify-start sm:justify-center gap-2 overflow-x-auto pb-4 mb-8 scrollbar-hide">
           {categories.map((cat) => {
             const isActive = selectedCategory === cat.id;
+
             return (
               <button
                 key={cat.id}
@@ -86,20 +132,58 @@ export default function Menu() {
           })}
         </div>
 
+        {/* Loading */}
+        {loading && (
+          <div className="text-center py-16">
+            <div className="text-4xl mb-3">☕</div>
+            <p className="font-bold text-[#3D2314]">
+              جاري تحميل المنتجات...
+            </p>
+          </div>
+        )}
+
+        {/* Error */}
+        {!loading && error && (
+          <div className="text-center py-16 bg-white rounded-3xl border border-red-100 max-w-md mx-auto">
+            <span className="text-4xl">⚠️</span>
+
+            <h3 className="text-lg font-black text-red-600 mt-2">
+              حدث خطأ
+            </h3>
+
+            <p className="text-xs text-gray-500 mt-1">
+              {error}
+            </p>
+          </div>
+        )}
+
         {/* Products Grid */}
-        {filteredProducts.length === 0 ? (
+        {!loading && !error && filteredProducts.length === 0 && (
           <div className="text-center py-16 bg-white rounded-3xl border border-orange-100 max-w-md mx-auto">
             <span className="text-4xl">🔍</span>
-            <h3 className="text-lg font-black text-[#3D2314] mt-2">لا توجد نتائج بحث</h3>
-            <p className="text-xs text-gray-500 mt-1">جرب البحث باسم منتج آخر</p>
+
+            <h3 className="text-lg font-black text-[#3D2314] mt-2">
+              لا توجد نتائج بحث
+            </h3>
+
+            <p className="text-xs text-gray-500 mt-1">
+              جرب البحث باسم منتج آخر
+            </p>
           </div>
-        ) : (
+        )}
+
+        {!loading && !error && filteredProducts.length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {filteredProducts.map((product, index) => (
-              <ProductCard key={product.id} product={product} index={index} />
+              <ProductCard
+                key={product.id}
+                product={product}
+                index={index}
+              />
             ))}
           </div>
         )}
+
       </div>
     </main>
   );
