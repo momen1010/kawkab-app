@@ -1,4 +1,3 @@
-
 import { useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
@@ -223,6 +222,11 @@ export default function Checkout() {
     setIsSubmitting(true);
 
     try {
+      /*
+       * مهم:
+       * لا نرسل السعر أو الإجمالي أو orderNumber أو trackingToken.
+       * السيرفر هو الذي يقرأ الأسعار من Firestore ويحسب الإجمالي.
+       */
       const items = cartItems.map((item) => ({
         productId: String(item.product?.id || ''),
         quantity: normalizeQuantity(item.quantity),
@@ -272,6 +276,9 @@ export default function Checkout() {
         );
       }
 
+      /*
+       * نستخدم بيانات السيرفر فقط في الإجمالي والمنتجات.
+       */
       const serverItems = Array.isArray(data.items)
         ? data.items
         : [];
@@ -609,8 +616,9 @@ export default function Checkout() {
                 {paymentMethod === 'vodafone_cash' &&
                   orderMethod === 'website' && (
                     <div className="mt-4 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-2xl p-4 text-sm font-bold">
-                      ⚠️ الدفع عبر Vodafone Cash يحتاج إرسال الطلب
-                      عبر WhatsApp حتى تتمكن من إرسال صورة التحويل.
+                      ⚠️ الدفع عبر Vodafone Cash يتطلب إرسال الطلب
+                      عبر WhatsApp، وبعدها يمكنك إرسال صورة التحويل
+                      في نفس المحادثة.
                     </div>
                   )}
               </section>
@@ -630,9 +638,7 @@ export default function Checkout() {
 
                 <div className="space-y-4 mb-6">
                   {cartItems.map((item) => {
-                    const price = getSafePrice(
-                      item.product?.price
-                    );
+                    const price = getSafePrice(item.product?.price);
 
                     const quantity = normalizeQuantity(
                       item.quantity
@@ -640,51 +646,23 @@ export default function Checkout() {
 
                     const itemTotal = price * quantity;
 
-                    const productImage =
-                      item.product?.image ||
-                      item.product?.imageUrl ||
-                      item.product?.imageURL ||
-                      '';
-
                     return (
                       <div
                         key={item.key || item.product?.id}
                         className="flex items-center justify-between gap-3"
                       >
-                        <div className="flex items-center gap-3 min-w-0">
-                          {productImage ? (
-                            <img
-                              src={productImage}
-                              alt={
-                                item.product?.nameAr ||
-                                item.product?.name ||
-                                'Product'
-                              }
-                              className="w-14 h-14 rounded-xl object-cover flex-shrink-0 border border-orange-100"
-                              onError={(e) => {
-                                e.currentTarget.style.display =
-                                  'none';
-                              }}
-                            />
-                          ) : (
-                            <div className="w-14 h-14 rounded-xl bg-orange-50 flex items-center justify-center text-2xl flex-shrink-0">
-                              🍽️
-                            </div>
-                          )}
+                        <div>
+                          <p className="font-black text-[#3D2314] text-sm">
+                            {item.product?.nameAr ||
+                              item.product?.name}
+                          </p>
 
-                          <div className="min-w-0">
-                            <p className="font-black text-[#3D2314] text-sm truncate">
-                              {item.product?.nameAr ||
-                                item.product?.name}
-                            </p>
-
-                            <p className="text-xs text-gray-500">
-                              × {quantity}
-                            </p>
-                          </div>
+                          <p className="text-xs text-gray-500">
+                            × {quantity}
+                          </p>
                         </div>
 
-                        <span className="font-black text-[#FF6600] whitespace-nowrap">
+                        <span className="font-black text-[#FF6600]">
                           {itemTotal} ج.م
                         </span>
                       </div>
@@ -700,7 +678,6 @@ export default function Checkout() {
 
                   <div className="flex justify-between text-sm font-bold text-gray-600">
                     <span>التوصيل</span>
-
                     <span>
                       {deliveryFee === 0
                         ? 'مجاني'
