@@ -211,7 +211,7 @@ export const products = [
     name: 'Kawkab Qashtota',
     nameAr: 'قشطوطة الكوكب',
     description: 'Special signature dessert with extra cream & toppings',
-    descriptionAr: 'قشطوطة الدمار المار الخاصة بكوكب السعادة',
+    descriptionAr: 'قشطوطة الدمار المار الخاصة بهابي درينك',
     price: 50,
     category: 'waffle',
     image: waffel6

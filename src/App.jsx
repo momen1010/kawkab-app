@@ -1,4 +1,3 @@
-
 import { useEffect, useState } from 'react';
 import {
   BrowserRouter as Router,
@@ -7,6 +6,7 @@ import {
   Navigate,
   Outlet,
 } from 'react-router-dom';
+import Products from './admin/pages/Products';
 
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from './firebase/config';
@@ -17,14 +17,25 @@ import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import CartDrawer from './components/CartDrawer';
 import FloatingCartButton from './components/FloatingCartButton';
-
+import ProductMigration from './admin/pages/ProductMigration';
 import Home from './pages/Home';
 import Menu from './pages/Menu';
+import Customers from './admin/pages/Customers';
 import Checkout from './pages/Checkout';
+import Kitchen from './admin/pages/Kitchen';
 import OrderTracking from './pages/OrderTracking';
-
+import Categories from './admin/pages/Categories';
 import AdminLogin from './AdminLogin';
-import AdminDashboard from './AdminDashboard';
+import Analytics from './admin/pages/Analytics';
+import Settings from './admin/pages/Settings';
+import CategoryMigration from './admin/pages/CategoryMigration';
+import AdminHome from './admin/pages/AdminHome';
+import Orders from './admin/pages/Orders';
+
+import AdminLayout from './admin/layout/AdminLayout';
+
+
+
 
 /* =========================
    Loading Screen
@@ -33,13 +44,13 @@ import AdminDashboard from './AdminDashboard';
 function AuthLoading() {
   return (
     <div
-      className="min-h-screen flex items-center justify-center bg-[#FFF8F3]"
+      className="flex min-h-screen items-center justify-center bg-[#FFF8F3]"
       dir="rtl"
     >
       <div className="text-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#D4AF37] mx-auto mb-4" />
+        <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-b-2 border-[#D4AF37]" />
 
-        <p className="text-[#3D2314] font-bold">
+        <p className="font-bold text-[#3D2314]">
           جاري التحقق من تسجيل الدخول...
         </p>
       </div>
@@ -71,12 +82,13 @@ function ProtectedRoute({ children }) {
   }
 
   /*
-   * IMPORTANT:
    * Authentication != Authorization.
    *
-   * For now we only verify that the user is authenticated.
-   * Real admin authorization must be enforced with Firebase
-   * security rules / custom claims and verified separately.
+   * Admin authorization is currently verified
+   * inside AdminDashboard through Firebase custom claims.
+   *
+   * We are keeping this behavior unchanged while
+   * rebuilding the admin architecture.
    */
 
   return children;
@@ -105,31 +117,36 @@ function WebsiteLayout() {
 
       {toast && (
         <div
-          className="fixed top-24 left-1/2 -translate-x-1/2
-                     sm:top-auto sm:left-auto sm:translate-x-0
-                     sm:bottom-6 sm:right-6
-                     z-50 animate-bounce"
+          className="
+            fixed top-24 left-1/2 z-50
+            -translate-x-1/2 animate-bounce
+            sm:top-auto sm:right-6 sm:bottom-6
+            sm:left-auto sm:translate-x-0
+          "
           role="status"
           aria-live="polite"
         >
           <div
-            className="bg-white/95 backdrop-blur-md
-                       border border-orange-100 shadow-2xl
-                       rounded-2xl p-4
-                       flex items-center gap-3
-                       border-r-4 border-r-[#E11383]"
+            className="
+              flex items-center gap-3
+              rounded-2xl border border-orange-100
+              border-r-4 border-r-[#E11383]
+              bg-white/95 p-4 shadow-2xl backdrop-blur-md
+            "
           >
             <div
-              className="w-9 h-9 rounded-full
-                         bg-gradient-to-r from-[#E11383] to-[#FF6600]
-                         flex items-center justify-center
-                         text-white font-bold shadow-md"
+              className="
+                flex h-9 w-9 items-center justify-center
+                rounded-full
+                bg-gradient-to-r from-[#E11383] to-[#FF6600]
+                font-bold text-white shadow-md
+              "
               aria-hidden="true"
             >
               ✓
             </div>
 
-            <span className="text-[#3D2314] font-extrabold text-sm">
+            <span className="text-sm font-extrabold text-[#3D2314]">
               {toast}
             </span>
           </div>
@@ -146,19 +163,23 @@ function WebsiteLayout() {
 function NotFound() {
   return (
     <div
-      className="min-h-[70vh] flex items-center justify-center px-6 py-16 text-center"
+      className="
+        flex min-h-[70vh]
+        items-center justify-center
+        px-6 py-16 text-center
+      "
       dir="rtl"
     >
       <div className="max-w-md">
-        <div className="text-7xl font-black text-[#E11383] mb-4">
+        <div className="mb-4 text-7xl font-black text-[#E11383]">
           404
         </div>
 
-        <h1 className="text-2xl sm:text-3xl font-black text-[#3D2314] mb-3">
+        <h1 className="mb-3 text-2xl font-black text-[#3D2314] sm:text-3xl">
           الصفحة غير موجودة
         </h1>
 
-        <p className="text-[#6B5143] mb-8 leading-8">
+        <p className="mb-8 leading-8 text-[#6B5143]">
           الصفحة التي تبحث عنها غير موجودة أو ربما تم نقلها.
         </p>
 
@@ -175,11 +196,15 @@ function NotFound() {
 function AppContent() {
   return (
     <div
-      className="min-h-screen flex flex-col
-                 bg-[#FFF8F3] text-[#3D2314] text-right"
+      className="
+        flex min-h-screen flex-col
+        bg-[#FFF8F3]
+        text-right text-[#3D2314]
+      "
       dir="rtl"
     >
       <Routes>
+
         {/* =========================
             Admin Login
         ========================= */}
@@ -190,18 +215,53 @@ function AppContent() {
         />
 
         {/* =========================
-            Protected Admin Dashboard
+            Protected Admin Area
         ========================= */}
 
-        <Route
-          path="/admin/dashboard"
-          element={
-            <ProtectedRoute>
-              <AdminDashboard />
-            </ProtectedRoute>
-          }
-        />
+<Route
+  element={
+    <ProtectedRoute>
+      <AdminLayout />
+    </ProtectedRoute>
+  }
+>
+<Route
+  path="/admin/migrate-products"
+  element={<ProductMigration />}
+/>
+  <Route
+    path="/admin/dashboard"
+    element={<AdminHome />}
+  />
+  <Route
+  path="/admin/products"
+  element={<Products />}
+/>
+<Route path="/admin/customers"
+ element={<Customers />} />
+<Route
+    path="/admin/orders"
+    element={<Orders />}
+  />
+<Route path="/admin/kitchen"
+  element={<Kitchen />} />
+  <Route
+    path="/admin/categories"
+    element={<Categories />}
+  />
+<Route path="/admin/analytics" 
+   element={<Analytics />} 
+/>
+<Route path="/admin/settings" 
+   element={<Settings />} 
+/>
 
+  <Route
+    path="/admin/migrate-categories"
+    element={<CategoryMigration />}
+  />
+
+</Route>
         {/* =========================
             Customer Website
         ========================= */}
@@ -227,6 +287,7 @@ function AppContent() {
           path="*"
           element={<NotFound />}
         />
+
       </Routes>
     </div>
   );
@@ -245,4 +306,3 @@ export default function App() {
     </Router>
   );
 }
-

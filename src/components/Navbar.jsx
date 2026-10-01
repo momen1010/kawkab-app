@@ -13,7 +13,7 @@ export default function Navbar() {
         {/* Logo */}
         <Link to="/" className="flex items-center gap-2 group">
           <span className="text-2xl sm:text-3xl font-black text-[#FF6600] tracking-tight group-hover:scale-105 transition-transform">
-            كوكب <span className="text-[#E11383]">السعادة</span> 🍩
+             happy drink<span className="text-[#E11383]"></span> 🍩
           </span>
         </Link>
 

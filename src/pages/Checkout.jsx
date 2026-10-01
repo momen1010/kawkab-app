@@ -1,41 +1,64 @@
-import { useMemo, useRef, useState } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
 
-const VODAFONE_CASH_NUMBER = '01119346488';
-const WHATSAPP_NUMBER = '201119346488';
+const DEFAULT_SETTINGS = {
+  restaurantName: 'كوكب السعادة',
+  whatsappNumber: '201119346488',
+  vodafoneCashNumber: '01119346488',
+  deliveryFee: 20,
+  freeDeliveryLimit: 150,
+  ordersEnabled: true,
+  closedMessage: 'نعتذر، استقبال الطلبات مغلق حاليًا.',
+};
+
+const PHONE_REGEX = /^01\d{9}$/;
+const MAX_ITEM_QUANTITY = 20;
 
 function getSafePrice(value) {
   const price = Number(value);
-
-  if (!Number.isFinite(price) || price < 0) {
-    return 0;
-  }
-
-  return price;
+  return Number.isFinite(price) && price >= 0 ? price : 0;
 }
-
-const DELIVERY_FEE = 20;
-const FREE_DELIVERY_LIMIT = 150;
 
 function normalizeText(value) {
   return String(value ?? '').trim();
 }
 
+function normalizePhone(value) {
+  return String(value ?? '')
+    .replace(/\D/g, '')
+    .slice(0, 11);
+}
+
+function isValidEgyptianPhone(phone) {
+  return PHONE_REGEX.test(phone);
+}
+
 function normalizeQuantity(value) {
   const quantity = Number(value);
 
-  if (!Number.isFinite(quantity)) return 1;
+  if (
+    !Number.isFinite(quantity) ||
+    !Number.isInteger(quantity) ||
+    quantity < 1
+  ) {
+    return 1;
+  }
 
-  return Math.min(Math.max(Math.floor(quantity), 1), 20);
+  return Math.min(quantity, MAX_ITEM_QUANTITY);
 }
 
-function getDeliveryFee(deliveryType, subtotal) {
+function getDeliveryFee(deliveryType, subtotal, settings) {
   if (deliveryType !== 'delivery') return 0;
 
-  if (subtotal >= FREE_DELIVERY_LIMIT) return 0;
-
-  return DELIVERY_FEE;
+  return subtotal >= settings.freeDeliveryLimit
+    ? 0
+    : settings.deliveryFee;
 }
 
 function buildWhatsAppMessage({
@@ -50,29 +73,33 @@ function buildWhatsAppMessage({
   trackingToken,
   paymentMethod,
   transactionId,
+  restaurantName,
+  vodafoneCashNumber,
 }) {
   const itemsText = items
     .map((item) => {
       const itemTotal =
-        Number(item.price || 0) * Number(item.quantity || 0);
+        Number(item.price || 0) *
+        Number(item.quantity || 0);
 
       return `• ${item.name} × ${item.quantity} = ${itemTotal} ج.م`;
     })
     .join('\n');
 
-  const trackingUrl = `${window.location.origin}/track-order?token=${trackingToken}`;
+  const trackingUrl =
+    `${window.location.origin}/track-order?token=${trackingToken}`;
 
   const paymentText =
     paymentMethod === 'vodafone_cash'
       ? `📱 *الدفع:* Vodafone Cash
 💳 *رقم العملية:* ${transactionId}
-📞 *رقم Vodafone Cash:* ${VODAFONE_CASH_NUMBER}
+📞 *رقم Vodafone Cash:* ${vodafoneCashNumber}
 
 📸 *مهم:* برجاء إرسال صورة التحويل في نفس المحادثة بعد إرسال الطلب.`
       : `💵 *الدفع:* الدفع عند الاستلام`;
 
   return `
-🌟 *طلب جديد - كوكب السعادة* 🌟
+🌟 *طلب جديد - ${restaurantName}* 🌟
 
 👤 *الاسم:* ${name}
 📱 *الهاتف:* ${phone}
@@ -104,20 +131,115 @@ export default function Checkout() {
     getCartTotal,
   } = useCart();
 
+  const [settings, setSettings] = useState(
+    DEFAULT_SETTINGS
+  );
+  const [settingsLoading, setSettingsLoading] =
+    useState(true);
+  const [settingsError, setSettingsError] = useState('');
+
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
   const [notes, setNotes] = useState('');
 
-  const [paymentMethod, setPaymentMethod] = useState('cash');
-  const [transactionId, setTransactionId] = useState('');
+  const [paymentMethod, setPaymentMethod] =
+    useState('cash');
+  const [transactionId, setTransactionId] =
+    useState('');
 
-  const [orderMethod, setOrderMethod] = useState('website');
+  const [orderMethod, setOrderMethod] =
+    useState('website');
 
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSubmitting, setIsSubmitting] =
+    useState(false);
   const [error, setError] = useState('');
 
   const formRef = useRef(null);
+
+  useEffect(() => {
+    window.scrollTo({
+      top: 0,
+      left: 0,
+      behavior: 'auto',
+    });
+  }, []);
+
+  // =====================================================
+  // LOAD PUBLIC RESTAURANT SETTINGS
+  // =====================================================
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSettings() {
+      try {
+        setSettingsLoading(true);
+        setSettingsError('');
+
+        const response = await fetch(
+          '/api/create-order',
+          {
+            method: 'GET',
+            headers: {
+              Accept: 'application/json',
+            },
+          }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok || !data?.success) {
+          throw new Error(
+            data?.error ||
+              'تعذر تحميل إعدادات المطعم.'
+          );
+        }
+
+        if (!cancelled && data.settings) {
+          setSettings({
+            ...DEFAULT_SETTINGS,
+            ...data.settings,
+            deliveryFee:
+              Number(data.settings.deliveryFee) >= 0
+                ? Number(data.settings.deliveryFee)
+                : DEFAULT_SETTINGS.deliveryFee,
+            freeDeliveryLimit:
+              Number(
+                data.settings.freeDeliveryLimit
+              ) >= 0
+                ? Number(
+                    data.settings.freeDeliveryLimit
+                  )
+                : DEFAULT_SETTINGS.freeDeliveryLimit,
+            ordersEnabled:
+              data.settings.ordersEnabled !== false,
+          });
+        }
+      } catch (err) {
+        console.error(
+          'Restaurant settings load error:',
+          err
+        );
+
+        if (!cancelled) {
+          setSettingsError(
+            'تعذر تحميل إعدادات المطعم. سيتم استخدام الإعدادات الافتراضية.'
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setSettingsLoading(false);
+        }
+      }
+    }
+
+    loadSettings();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const rawCartTotal = Number(getCartTotal());
 
@@ -125,20 +247,34 @@ export default function Checkout() {
     ? Math.max(rawCartTotal, 0)
     : 0;
 
-  const deliveryFee = getDeliveryFee(deliveryType, subtotal);
+  const deliveryFee = getDeliveryFee(
+    deliveryType,
+    subtotal,
+    settings
+  );
 
   const grandTotal = subtotal + deliveryFee;
-
   const cartIsEmpty = cartItems.length === 0;
 
   const canSubmit = useMemo(() => {
+    if (
+      settingsLoading ||
+      !settings.ordersEnabled ||
+      isSubmitting ||
+      cartItems.length === 0
+    ) {
+      return false;
+    }
+
+    const customerName = normalizeText(name);
+    const customerPhone = normalizePhone(phone);
+    const customerAddress = normalizeText(address);
+
     const basicValid =
-      normalizeText(name).length >= 2 &&
-      normalizeText(phone).length >= 8 &&
+      customerName.length >= 2 &&
+      isValidEgyptianPhone(customerPhone) &&
       (deliveryType === 'pickup' ||
-        normalizeText(address).length > 0) &&
-      cartItems.length > 0 &&
-      !isSubmitting;
+        customerAddress.length > 0);
 
     if (!basicValid) return false;
 
@@ -151,12 +287,14 @@ export default function Checkout() {
 
     return true;
   }, [
+    settingsLoading,
+    settings.ordersEnabled,
+    isSubmitting,
+    cartItems.length,
     name,
     phone,
     address,
     deliveryType,
-    cartItems.length,
-    isSubmitting,
     paymentMethod,
     transactionId,
     orderMethod,
@@ -169,23 +307,37 @@ export default function Checkout() {
 
     setError('');
 
+    if (!settings.ordersEnabled) {
+      setError(
+        settings.closedMessage ||
+          DEFAULT_SETTINGS.closedMessage
+      );
+      return;
+    }
+
     const customerName = normalizeText(name);
-    const customerPhone = normalizeText(phone);
+    const customerPhone = normalizePhone(phone);
     const customerAddress = normalizeText(address);
     const customerNotes = normalizeText(notes);
-    const cleanTransactionId = normalizeText(transactionId);
+    const cleanTransactionId =
+      normalizeText(transactionId);
 
     if (customerName.length < 2) {
       setError('من فضلك أدخل اسم صحيح.');
       return;
     }
 
-    if (customerPhone.length < 8) {
-      setError('من فضلك أدخل رقم هاتف صحيح.');
+    if (!isValidEgyptianPhone(customerPhone)) {
+      setError(
+        'من فضلك أدخل رقم هاتف مصري صحيح مكون من 11 رقم ويبدأ بـ 01.'
+      );
       return;
     }
 
-    if (deliveryType === 'delivery' && !customerAddress) {
+    if (
+      deliveryType === 'delivery' &&
+      !customerAddress
+    ) {
       setError('من فضلك أدخل عنوان التوصيل.');
       return;
     }
@@ -195,14 +347,20 @@ export default function Checkout() {
       return;
     }
 
-    if (!['cash', 'vodafone_cash'].includes(paymentMethod)) {
+    if (
+      !['cash', 'vodafone_cash'].includes(
+        paymentMethod
+      )
+    ) {
       setError('طريقة الدفع غير صحيحة.');
       return;
     }
 
     if (paymentMethod === 'vodafone_cash') {
       if (!cleanTransactionId) {
-        setError('من فضلك أدخل رقم عملية Vodafone Cash.');
+        setError(
+          'من فضلك أدخل رقم عملية Vodafone Cash.'
+        );
         return;
       }
 
@@ -214,79 +372,93 @@ export default function Checkout() {
       }
     }
 
-    if (!['website', 'whatsapp'].includes(orderMethod)) {
-      setError('طريقة إرسال الطلب غير صحيحة.');
+    if (
+      !['website', 'whatsapp'].includes(orderMethod)
+    ) {
+      setError(
+        'طريقة إرسال الطلب غير صحيحة.'
+      );
       return;
     }
 
     setIsSubmitting(true);
 
     try {
-      /*
-       * مهم:
-       * لا نرسل السعر أو الإجمالي أو orderNumber أو trackingToken.
-       * السيرفر هو الذي يقرأ الأسعار من Firestore ويحسب الإجمالي.
-       */
       const items = cartItems.map((item) => ({
-        productId: String(item.product?.id || ''),
+        productId: String(
+          item.product?.id || ''
+        ),
         quantity: normalizeQuantity(item.quantity),
         options:
-          item.options && typeof item.options === 'object'
+          item.options &&
+          typeof item.options === 'object'
             ? item.options
             : {},
       }));
 
       if (items.some((item) => !item.productId)) {
-        throw new Error('يوجد منتج غير صالح في السلة.');
-      }
-
-      const response = await fetch('/api/create-order', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          customer: {
-            name: customerName,
-            phone: customerPhone,
-            address: customerAddress,
-            notes: customerNotes,
-          },
-
-          deliveryType,
-
-          items,
-
-          paymentMethod,
-
-          transactionId:
-            paymentMethod === 'vodafone_cash'
-              ? cleanTransactionId
-              : '',
-
-          orderMethod,
-        }),
-      });
-
-      const data = await response.json().catch(() => null);
-
-      if (!response.ok || !data?.success) {
         throw new Error(
-          data?.error || 'تعذر إنشاء الطلب. حاول مرة أخرى.'
+          'يوجد منتج غير صالح في السلة.'
         );
       }
 
-      /*
-       * نستخدم بيانات السيرفر فقط في الإجمالي والمنتجات.
-       */
-      const serverItems = Array.isArray(data.items)
+      const response = await fetch(
+        '/api/create-order',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            customer: {
+              name: customerName,
+              phone: customerPhone,
+              address: customerAddress,
+              notes: customerNotes,
+            },
+            deliveryType,
+            items,
+            paymentMethod,
+            transactionId:
+              paymentMethod === 'vodafone_cash'
+                ? cleanTransactionId
+                : '',
+            orderMethod,
+          }),
+        }
+      );
+
+      const data = await response
+        .json()
+        .catch(() => null);
+
+      if (!response.ok || !data?.success) {
+        throw new Error(
+          data?.error ||
+            'تعذر إنشاء الطلب. حاول مرة أخرى.'
+        );
+      }
+
+      const serverItems = Array.isArray(
+        data.items
+      )
         ? data.items
         : [];
 
-      const serverSubtotal = Number(data.subtotal || 0);
-      const serverDeliveryFee = Number(data.deliveryFee || 0);
-      const serverTotal = Number(data.total || 0);
-      const trackingToken = data.trackingToken;
+      const serverSubtotal = Number(
+        data.subtotal || 0
+      );
+
+      const serverDeliveryFee = Number(
+        data.deliveryFee || 0
+      );
+
+      const serverTotal = Number(
+        data.total || 0
+      );
+
+      const trackingToken =
+        data.trackingToken;
 
       if (!trackingToken) {
         throw new Error(
@@ -295,37 +467,51 @@ export default function Checkout() {
       }
 
       if (orderMethod === 'whatsapp') {
-        const message = buildWhatsAppMessage({
-          items: serverItems,
-          name: customerName,
-          phone: customerPhone,
-          address: customerAddress,
-          notes: customerNotes,
-          subtotal: serverSubtotal,
-          calculatedDeliveryFee: serverDeliveryFee,
-          calculatedGrandTotal: serverTotal,
-          trackingToken,
-          paymentMethod,
-          transactionId: cleanTransactionId,
-        });
+        const message =
+          buildWhatsAppMessage({
+            items: serverItems,
+            name: customerName,
+            phone: customerPhone,
+            address: customerAddress,
+            notes: customerNotes,
+            subtotal: serverSubtotal,
+            calculatedDeliveryFee:
+              serverDeliveryFee,
+            calculatedGrandTotal:
+              serverTotal,
+            trackingToken,
+            paymentMethod,
+            transactionId:
+              cleanTransactionId,
+            restaurantName:
+              settings.restaurantName,
+            vodafoneCashNumber:
+              settings.vodafoneCashNumber,
+          });
 
-        const whatsappUrl = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(
-          message
-        )}`;
+        const whatsappUrl =
+          `https://wa.me/${settings.whatsappNumber}?text=${encodeURIComponent(
+            message
+          )}`;
 
         clearCart();
-
-        window.location.href = whatsappUrl;
+        window.location.href =
+          whatsappUrl;
         return;
       }
 
       clearCart();
 
       navigate(
-        `/track-order?token=${encodeURIComponent(trackingToken)}`
+        `/track-order?token=${encodeURIComponent(
+          trackingToken
+        )}`
       );
     } catch (err) {
-      console.error('Order creation failed:', err);
+      console.error(
+        'Order creation failed:',
+        err
+      );
 
       setError(
         err?.message ||
@@ -348,369 +534,502 @@ export default function Checkout() {
           </span>
 
           <h1 className="text-3xl sm:text-5xl font-black text-[#3D2314]">
-            إتمام <span className="text-[#FF6600]">الطلب</span>
+            إتمام{' '}
+            <span className="text-[#FF6600]">
+              الطلب
+            </span>
           </h1>
         </div>
 
-        {cartIsEmpty ? (
-          <div className="max-w-xl mx-auto bg-white rounded-3xl p-8 text-center border border-orange-100 shadow-sm">
-            <div className="text-5xl mb-4">🛒</div>
-
-            <h2 className="text-xl font-black text-[#3D2314] mb-2">
-              السلة فارغة
-            </h2>
-
-            <p className="text-sm text-gray-500 mb-6">
-              أضف بعض المنتجات أولاً لإتمام الطلب.
-            </p>
-
-            <button
-              type="button"
-              onClick={() => navigate('/menu')}
-              className="bg-[#FF6600] text-white px-6 py-3 rounded-xl font-black"
-            >
-              العودة للقائمة
-            </button>
+        {settingsError && (
+          <div className="max-w-3xl mx-auto mb-6 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-2xl p-4 text-sm font-bold">
+            ⚠️ {settingsError}
           </div>
-        ) : (
-          <form
-            ref={formRef}
-            onSubmit={handleSubmit}
-            className="grid lg:grid-cols-3 gap-6"
-          >
-            <div className="lg:col-span-2 space-y-6">
-              <section className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm">
-                <h2 className="text-xl font-black text-[#3D2314] mb-5">
-                  بيانات العميل
-                </h2>
+        )}
 
-                <div className="grid sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-black text-[#3D2314] mb-2">
-                      الاسم
-                    </label>
+        {!settingsLoading &&
+          !settings.ordersEnabled && (
+            <div className="max-w-xl mx-auto bg-white rounded-3xl p-8 text-center border border-orange-100 shadow-sm">
+              <div className="text-5xl mb-4">
+                🔒
+              </div>
 
-                    <input
-                      type="text"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600]"
-                      placeholder="اسمك"
-                    />
-                  </div>
+              <h2 className="text-xl font-black text-[#3D2314] mb-3">
+                استقبال الطلبات مغلق حاليًا
+              </h2>
 
-                  <div>
-                    <label className="block text-sm font-black text-[#3D2314] mb-2">
-                      رقم الهاتف
-                    </label>
+              <p className="text-sm text-gray-500 mb-6">
+                {settings.closedMessage}
+              </p>
 
-                    <input
-                      type="tel"
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600]"
-                      placeholder="01xxxxxxxxx"
-                    />
-                  </div>
-                </div>
+              <button
+                type="button"
+                onClick={() =>
+                  navigate('/menu')
+                }
+                className="bg-[#FF6600] text-white px-6 py-3 rounded-xl font-black"
+              >
+                العودة للقائمة
+              </button>
+            </div>
+          )}
 
-                <div className="mt-4">
-                  <label className="block text-sm font-black text-[#3D2314] mb-2">
-                    طريقة الاستلام
-                  </label>
+        {settings.ordersEnabled &&
+          (cartIsEmpty ? (
+            <div className="max-w-xl mx-auto bg-white rounded-3xl p-8 text-center border border-orange-100 shadow-sm">
+              <div className="text-5xl mb-4">
+                🛒
+              </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setDeliveryType('delivery')}
-                      className={`py-3 rounded-xl font-black border transition ${
-                        deliveryType === 'delivery'
-                          ? 'bg-[#FF6600] text-white border-[#FF6600]'
-                          : 'bg-white text-[#3D2314] border-orange-100'
-                      }`}
-                    >
-                      🚚 توصيل
-                    </button>
+              <h2 className="text-xl font-black text-[#3D2314] mb-2">
+                السلة فارغة
+              </h2>
 
-                    <button
-                      type="button"
-                      onClick={() => setDeliveryType('pickup')}
-                      className={`py-3 rounded-xl font-black border transition ${
-                        deliveryType === 'pickup'
-                          ? 'bg-[#FF6600] text-white border-[#FF6600]'
-                          : 'bg-white text-[#3D2314] border-orange-100'
-                      }`}
-                    >
-                      🏪 استلام
-                    </button>
-                  </div>
-                </div>
+              <p className="text-sm text-gray-500 mb-6">
+                أضف بعض المنتجات أولاً لإتمام الطلب.
+              </p>
 
-                {deliveryType === 'delivery' && (
-                  <div className="mt-4">
-                    <label className="block text-sm font-black text-[#3D2314] mb-2">
-                      عنوان التوصيل
-                    </label>
+              <button
+                type="button"
+                onClick={() =>
+                  navigate('/menu')
+                }
+                className="bg-[#FF6600] text-white px-6 py-3 rounded-xl font-black"
+              >
+                العودة للقائمة
+              </button>
+            </div>
+          ) : (
+            <form
+              ref={formRef}
+              onSubmit={handleSubmit}
+              className="grid lg:grid-cols-3 gap-6"
+            >
+              <div className="lg:col-span-2 space-y-6">
+                <section className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm">
+                  <h2 className="text-xl font-black text-[#3D2314] mb-5">
+                    بيانات العميل
+                  </h2>
 
-                    <textarea
-                      value={address}
-                      onChange={(e) => setAddress(e.target.value)}
-                      rows={3}
-                      className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600] resize-none"
-                      placeholder="اكتب عنوان التوصيل بالتفصيل"
-                    />
-                  </div>
-                )}
-
-                <div className="mt-4">
-                  <label className="block text-sm font-black text-[#3D2314] mb-2">
-                    ملاحظات
-                  </label>
-
-                  <textarea
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    rows={3}
-                    className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600] resize-none"
-                    placeholder="أي ملاحظات خاصة بالطلب..."
-                  />
-                </div>
-              </section>
-
-              <section className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm">
-                <h2 className="text-xl font-black text-[#3D2314] mb-5">
-                  طريقة الدفع
-                </h2>
-
-                <div className="grid sm:grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPaymentMethod('cash');
-                      setTransactionId('');
-                    }}
-                    className={`py-4 rounded-xl font-black border transition ${
-                      paymentMethod === 'cash'
-                        ? 'bg-[#FF6600] text-white border-[#FF6600]'
-                        : 'bg-white text-[#3D2314] border-orange-100'
-                    }`}
-                  >
-                    💵 الدفع عند الاستلام
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPaymentMethod('vodafone_cash')
-                    }
-                    className={`py-4 rounded-xl font-black border transition ${
-                      paymentMethod === 'vodafone_cash'
-                        ? 'bg-[#FF6600] text-white border-[#FF6600]'
-                        : 'bg-white text-[#3D2314] border-orange-100'
-                    }`}
-                  >
-                    📱 Vodafone Cash
-                  </button>
-                </div>
-
-                {paymentMethod === 'vodafone_cash' && (
-                  <div className="mt-4 space-y-4">
-                    <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
-                      <p className="text-sm font-black text-[#3D2314] mb-2">
-                        📱 رقم Vodafone Cash
-                      </p>
-
-                      <div className="flex items-center justify-between gap-3">
-                        <span
-                          dir="ltr"
-                          className="text-lg font-black text-[#FF6600]"
-                        >
-                          {VODAFONE_CASH_NUMBER}
-                        </span>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            navigator.clipboard?.writeText(
-                              VODAFONE_CASH_NUMBER
-                            );
-                          }}
-                          className="px-3 py-2 rounded-lg bg-white border border-red-200 text-sm font-bold"
-                        >
-                          نسخ
-                        </button>
-                      </div>
-                    </div>
-
+                  <div className="grid sm:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-black text-[#3D2314] mb-2">
-                        رقم العملية
+                        الاسم
                       </label>
 
                       <input
                         type="text"
-                        value={transactionId}
+                        value={name}
                         onChange={(e) =>
-                          setTransactionId(e.target.value)
+                          setName(e.target.value)
                         }
+                        autoComplete="name"
                         className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600]"
-                        placeholder="رقم عملية Vodafone Cash"
+                        placeholder="اسمك"
                       />
                     </div>
 
-                    <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
-                      <p className="font-black text-[#3D2314] mb-2">
-                        📸 برجاء إرسال صورة التحويل عبر WhatsApp
-                      </p>
+                    <div>
+                      <label className="block text-sm font-black text-[#3D2314] mb-2">
+                        رقم الهاتف
+                      </label>
 
-                      <p className="text-sm text-gray-600 leading-6">
-                        بعد إتمام التحويل، اضغط على إرسال الطلب عبر
-                        WhatsApp وأرسل صورة التحويل في نفس المحادثة
-                        للتأكيد.
-                      </p>
+                      <input
+                        type="tel"
+                        value={phone}
+                        onChange={(e) =>
+                          setPhone(
+                            normalizePhone(
+                              e.target.value
+                            )
+                          )
+                        }
+                        inputMode="numeric"
+                        autoComplete="tel"
+                        maxLength={11}
+                        dir="ltr"
+                        className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600]"
+                        placeholder="01xxxxxxxxx"
+                      />
 
-                      <a
-                        href={`https://wa.me/${WHATSAPP_NUMBER}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex mt-3 bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-xl font-black transition"
-                      >
-                        💬 فتح WhatsApp
-                      </a>
+                      {phone.length > 0 &&
+                        !isValidEgyptianPhone(
+                          phone
+                        ) && (
+                          <p className="mt-2 text-xs font-bold text-red-500">
+                            يجب أن يبدأ الرقم بـ 01 ويكون 11 رقمًا.
+                          </p>
+                        )}
                     </div>
                   </div>
-                )}
-              </section>
 
-              <section className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm">
-                <h2 className="text-xl font-black text-[#3D2314] mb-5">
-                  طريقة إرسال الطلب
-                </h2>
+                  <div className="mt-4">
+                    <label className="block text-sm font-black text-[#3D2314] mb-2">
+                      طريقة الاستلام
+                    </label>
 
-                <div className="grid sm:grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setOrderMethod('website')}
-                    className={`py-4 rounded-xl font-black border transition ${
-                      orderMethod === 'website'
-                        ? 'bg-[#FF6600] text-white border-[#FF6600]'
-                        : 'bg-white text-[#3D2314] border-orange-100'
-                    }`}
-                  >
-                    🌐 من الموقع
-                  </button>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDeliveryType(
+                            'delivery'
+                          )
+                        }
+                        className={`py-3 rounded-xl font-black border transition ${
+                          deliveryType ===
+                          'delivery'
+                            ? 'bg-[#FF6600] text-white border-[#FF6600]'
+                            : 'bg-white text-[#3D2314] border-orange-100'
+                        }`}
+                      >
+                        🚚 توصيل
+                      </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setOrderMethod('whatsapp')}
-                    className={`py-4 rounded-xl font-black border transition ${
-                      orderMethod === 'whatsapp'
-                        ? 'bg-[#FF6600] text-white border-[#FF6600]'
-                        : 'bg-white text-[#3D2314] border-orange-100'
-                    }`}
-                  >
-                    💬 WhatsApp
-                  </button>
-                </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDeliveryType(
+                            'pickup'
+                          )
+                        }
+                        className={`py-3 rounded-xl font-black border transition ${
+                          deliveryType ===
+                          'pickup'
+                            ? 'bg-[#FF6600] text-white border-[#FF6600]'
+                            : 'bg-white text-[#3D2314] border-orange-100'
+                        }`}
+                      >
+                        🏪 استلام
+                      </button>
+                    </div>
+                  </div>
 
-                {paymentMethod === 'vodafone_cash' &&
-                  orderMethod === 'website' && (
-                    <div className="mt-4 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-2xl p-4 text-sm font-bold">
-                      ⚠️ الدفع عبر Vodafone Cash يتطلب إرسال الطلب
-                      عبر WhatsApp، وبعدها يمكنك إرسال صورة التحويل
-                      في نفس المحادثة.
+                  {deliveryType ===
+                    'delivery' && (
+                    <div className="mt-4">
+                      <label className="block text-sm font-black text-[#3D2314] mb-2">
+                        عنوان التوصيل
+                      </label>
+
+                      <textarea
+                        value={address}
+                        onChange={(e) =>
+                          setAddress(
+                            e.target.value
+                          )
+                        }
+                        rows={3}
+                        className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600] resize-none"
+                        placeholder="اكتب عنوان التوصيل بالتفصيل"
+                      />
                     </div>
                   )}
-              </section>
 
-              {error && (
-                <div className="bg-red-50 border border-red-200 text-red-700 rounded-2xl p-4 font-bold text-sm">
-                  {error}
-                </div>
-              )}
-            </div>
+                  <div className="mt-4">
+                    <label className="block text-sm font-black text-[#3D2314] mb-2">
+                      ملاحظات
+                    </label>
 
-            <aside className="lg:col-span-1">
-              <div className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm lg:sticky lg:top-24">
-                <h2 className="text-xl font-black text-[#3D2314] mb-5">
-                  ملخص الطلب
-                </h2>
+                    <textarea
+                      value={notes}
+                      onChange={(e) =>
+                        setNotes(e.target.value)
+                      }
+                      rows={3}
+                      maxLength={300}
+                      className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600] resize-none"
+                      placeholder="أي ملاحظات خاصة بالطلب..."
+                    />
+                  </div>
+                </section>
 
-                <div className="space-y-4 mb-6">
-                  {cartItems.map((item) => {
-                    const price = getSafePrice(item.product?.price);
+                <section className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm">
+                  <h2 className="text-xl font-black text-[#3D2314] mb-5">
+                    طريقة الدفع
+                  </h2>
 
-                    const quantity = normalizeQuantity(
-                      item.quantity
-                    );
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPaymentMethod(
+                          'cash'
+                        );
+                        setTransactionId('');
+                      }}
+                      className={`py-4 rounded-xl font-black border transition ${
+                        paymentMethod ===
+                        'cash'
+                          ? 'bg-[#FF6600] text-white border-[#FF6600]'
+                          : 'bg-white text-[#3D2314] border-orange-100'
+                      }`}
+                    >
+                      💵 الدفع عند الاستلام
+                    </button>
 
-                    const itemTotal = price * quantity;
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPaymentMethod(
+                          'vodafone_cash'
+                        )
+                      }
+                      className={`py-4 rounded-xl font-black border transition ${
+                        paymentMethod ===
+                        'vodafone_cash'
+                          ? 'bg-[#FF6600] text-white border-[#FF6600]'
+                          : 'bg-white text-[#3D2314] border-orange-100'
+                      }`}
+                    >
+                      📱 Vodafone Cash
+                    </button>
+                  </div>
 
-                    return (
-                      <div
-                        key={item.key || item.product?.id}
-                        className="flex items-center justify-between gap-3"
-                      >
-                        <div>
-                          <p className="font-black text-[#3D2314] text-sm">
-                            {item.product?.nameAr ||
-                              item.product?.name}
-                          </p>
+                  {paymentMethod ===
+                    'vodafone_cash' && (
+                    <div className="mt-4 space-y-4">
+                      <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
+                        <p className="text-sm font-black text-[#3D2314] mb-2">
+                          📱 رقم Vodafone Cash
+                        </p>
 
-                          <p className="text-xs text-gray-500">
-                            × {quantity}
-                          </p>
+                        <div className="flex items-center justify-between gap-3">
+                          <span
+                            dir="ltr"
+                            className="text-lg font-black text-[#FF6600]"
+                          >
+                            {
+                              settings.vodafoneCashNumber
+                            }
+                          </span>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              navigator.clipboard?.writeText(
+                                settings.vodafoneCashNumber
+                              )
+                            }
+                            className="px-3 py-2 rounded-lg bg-white border border-red-200 text-sm font-bold"
+                          >
+                            نسخ
+                          </button>
                         </div>
-
-                        <span className="font-black text-[#FF6600]">
-                          {itemTotal} ج.م
-                        </span>
                       </div>
-                    );
-                  })}
-                </div>
 
-                <div className="border-t border-orange-100 pt-4 space-y-3">
-                  <div className="flex justify-between text-sm font-bold text-gray-600">
-                    <span>المجموع</span>
-                    <span>{subtotal} ج.م</span>
+                      <div>
+                        <label className="block text-sm font-black text-[#3D2314] mb-2">
+                          رقم العملية
+                        </label>
+
+                        <input
+                          type="text"
+                          value={
+                            transactionId
+                          }
+                          onChange={(e) =>
+                            setTransactionId(
+                              e.target.value
+                            )
+                          }
+                          maxLength={100}
+                          className="w-full px-4 py-3 rounded-xl border border-orange-100 focus:outline-none focus:border-[#FF6600]"
+                          placeholder="رقم عملية Vodafone Cash"
+                        />
+                      </div>
+
+                      <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
+                        <p className="font-black text-[#3D2314] mb-2">
+                          📸 برجاء إرسال صورة التحويل عبر WhatsApp
+                        </p>
+
+                        <p className="text-sm text-gray-600 leading-6">
+                          بعد إتمام التحويل، اضغط على إرسال الطلب عبر WhatsApp وأرسل صورة التحويل في نفس المحادثة للتأكيد.
+                        </p>
+
+                        <a
+                          href={`https://wa.me/${settings.whatsappNumber}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex mt-3 bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-xl font-black transition"
+                        >
+                          💬 فتح WhatsApp
+                        </a>
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                <section className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm">
+                  <h2 className="text-xl font-black text-[#3D2314] mb-5">
+                    طريقة إرسال الطلب
+                  </h2>
+
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setOrderMethod(
+                          'website'
+                        )
+                      }
+                      className={`py-4 rounded-xl font-black border transition ${
+                        orderMethod ===
+                        'website'
+                          ? 'bg-[#FF6600] text-white border-[#FF6600]'
+                          : 'bg-white text-[#3D2314] border-orange-100'
+                      }`}
+                    >
+                      🌐 من الموقع
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setOrderMethod(
+                          'whatsapp'
+                        )
+                      }
+                      className={`py-4 rounded-xl font-black border transition ${
+                        orderMethod ===
+                        'whatsapp'
+                          ? 'bg-[#FF6600] text-white border-[#FF6600]'
+                          : 'bg-white text-[#3D2314] border-orange-100'
+                      }`}
+                    >
+                      💬 WhatsApp
+                    </button>
                   </div>
 
-                  <div className="flex justify-between text-sm font-bold text-gray-600">
-                    <span>التوصيل</span>
-                    <span>
-                      {deliveryFee === 0
-                        ? 'مجاني'
-                        : `${deliveryFee} ج.م`}
-                    </span>
+                  {paymentMethod ===
+                    'vodafone_cash' &&
+                    orderMethod ===
+                      'website' && (
+                      <div className="mt-4 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-2xl p-4 text-sm font-bold">
+                        ⚠️ الدفع عبر Vodafone Cash يتطلب إرسال الطلب عبر WhatsApp.
+                      </div>
+                    )}
+                </section>
+
+                {error && (
+                  <div className="bg-red-50 border border-red-200 text-red-700 rounded-2xl p-4 font-bold text-sm">
+                    {error}
                   </div>
-
-                  <div className="border-t border-orange-100 pt-3 flex justify-between">
-                    <span className="font-black text-[#3D2314]">
-                      الإجمالي
-                    </span>
-
-                    <span className="font-black text-xl text-[#FF6600]">
-                      {grandTotal} ج.م
-                    </span>
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={!canSubmit}
-                  className="w-full mt-6 bg-[#FF6600] hover:bg-[#e85d00] disabled:bg-gray-300 disabled:cursor-not-allowed text-white py-4 rounded-2xl font-black transition"
-                >
-                  {isSubmitting
-                    ? 'جاري إنشاء الطلب...'
-                    : orderMethod === 'whatsapp'
-                    ? 'إرسال الطلب عبر WhatsApp'
-                    : 'تأكيد الطلب'}
-                </button>
+                )}
               </div>
-            </aside>
-          </form>
-        )}
+
+              <aside className="lg:col-span-1">
+                <div className="bg-white rounded-3xl p-5 sm:p-7 border border-orange-100 shadow-sm lg:sticky lg:top-24">
+                  <h2 className="text-xl font-black text-[#3D2314] mb-5">
+                    ملخص الطلب
+                  </h2>
+
+                  <div className="space-y-4 mb-6">
+                    {cartItems.map(
+                      (item) => {
+                        const price =
+                          getSafePrice(
+                            item.product
+                              ?.price
+                          );
+
+                        const quantity =
+                          normalizeQuantity(
+                            item.quantity
+                          );
+
+                        const itemTotal =
+                          price * quantity;
+
+                        return (
+                          <div
+                            key={
+                              item.key ||
+                              item.product
+                                ?.id
+                            }
+                            className="flex items-center justify-between gap-3"
+                          >
+                            <div>
+                              <p className="font-black text-[#3D2314] text-sm">
+                                {item
+                                  .product
+                                  ?.nameAr ||
+                                  item
+                                    .product
+                                    ?.name}
+                              </p>
+
+                              <p className="text-xs text-gray-500">
+                                × {quantity}
+                              </p>
+                            </div>
+
+                            <span className="font-black text-[#FF6600]">
+                              {
+                                itemTotal
+                              }{' '}
+                              ج.م
+                            </span>
+                          </div>
+                        );
+                      }
+                    )}
+                  </div>
+
+                  <div className="border-t border-orange-100 pt-4 space-y-3">
+                    <div className="flex justify-between text-sm font-bold text-gray-600">
+                      <span>
+                        المجموع
+                      </span>
+                      <span>
+                        {subtotal} ج.م
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between text-sm font-bold text-gray-600">
+                      <span>
+                        التوصيل
+                      </span>
+
+                      <span>
+                        {deliveryFee ===
+                        0
+                          ? 'مجاني'
+                          : `${deliveryFee} ج.م`}
+                      </span>
+                    </div>
+
+                    <div className="border-t border-orange-100 pt-3 flex justify-between">
+                      <span className="font-black text-[#3D2314]">
+                        الإجمالي
+                      </span>
+
+                      <span className="font-black text-xl text-[#FF6600]">
+                        {grandTotal} ج.م
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={
+                      !canSubmit
+                    }
+                    className="w-full mt-6 bg-[#FF6600] hover:bg-[#e85d00] disabled:bg-gray-300 disabled:cursor-not-allowed text-white py-4 rounded-2xl font-black transition"
+                  >
+                    {isSubmitting
+                      ? 'جاري إنشاء الطلب...'
+                      : orderMethod ===
+                        'whatsapp'
+                      ? 'إرسال الطلب عبر WhatsApp'
+                      : 'تأكيد الطلب'}
+                  </button>
+                </div>
+              </aside>
+            </form>
+          ))}
       </div>
     </main>
   );

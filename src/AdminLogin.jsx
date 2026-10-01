@@ -161,7 +161,7 @@ export default function AdminLogin() {
         </div>
 
         <p className="text-center text-xs text-gray-400 mt-5">
-          كوكب السعادة © 2026
+          هابي درينك © 2026
         </p>
 
       </div>

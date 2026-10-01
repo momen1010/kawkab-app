@@ -8,12 +8,16 @@ export default function Footer() {
             <div className="w-8 h-8 rounded-full bg-[#00704A] flex items-center justify-center">
               <span className="text-white font-bold text-sm">☕</span>
             </div>
-            <span className="text-[#1e3932] font-semibold">كوكب السعادة</span>
+            <span className="text-[#1e3932] font-semibold">هابي درينك</span>
           </div>
 
           {/* Copyright */}
           <p className="text-gray-500 text-sm text-center">
-            © 2024 كوكب السعادة. جميع الحقوق محفوظة
+            © 2024 هابي درينك. جميع الحقوق محفوظة
+            <br />
+            <br />
+            <br />
+           <h1> devolope by mo`men tarek</h1>
           </p>
 
           {/* Social Links */}

@@ -1,15 +1,20 @@
+
 // src/pages/Menu.jsx
 
 import { useEffect, useState } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
+
 import { db } from '../firebase/config';
-import { categories } from '../data/products';
 import ProductCard from '../components/ProductCard';
 import { useCart } from '../context/CartContext';
 
 export default function Menu() {
   const [products, setProducts] = useState([]);
+  const [categories, setCategories] = useState([]);
+
   const [loading, setLoading] = useState(true);
+  const [categoriesLoading, setCategoriesLoading] = useState(true);
+
   const [error, setError] = useState('');
 
   const [selectedCategory, setSelectedCategory] = useState('all');
@@ -21,9 +26,9 @@ export default function Menu() {
     const unsubscribe = onSnapshot(
       collection(db, 'products'),
       (snapshot) => {
-        const productsData = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
+        const productsData = snapshot.docs.map((productDoc) => ({
+          id: productDoc.id,
+          ...productDoc.data(),
         }));
 
         setProducts(productsData);
@@ -40,20 +45,67 @@ export default function Menu() {
     return () => unsubscribe();
   }, []);
 
+  // تحميل التصنيفات من Firestore
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, 'categories'),
+      (snapshot) => {
+        const categoriesData = snapshot.docs
+          .map((categoryDoc) => ({
+            id: categoryDoc.id,
+            ...categoryDoc.data(),
+          }))
+          .filter((category) => category.isActive !== false)
+          .sort(
+            (a, b) =>
+              Number(a.sortOrder || 0) - Number(b.sortOrder || 0)
+          );
+
+        setCategories([
+          {
+            id: 'all',
+            name: 'All',
+            nameAr: 'الكل',
+            icon: '☕',
+          },
+          ...categoriesData,
+        ]);
+
+        setCategoriesLoading(false);
+      },
+      (err) => {
+        console.error('Failed to load categories:', err);
+        setCategoriesLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
   // تصفية المنتجات بناءً على التصنيف والبحث
-  const filteredProducts = products.filter((p) => {
+  const filteredProducts = products.filter((product) => {
     const matchesCategory =
-      selectedCategory === 'all' || p.category === selectedCategory;
+      selectedCategory === 'all' ||
+      product.category === selectedCategory;
+
+    const normalizedSearch = searchQuery.toLowerCase();
 
     const matchesSearch =
-      p.nameAr?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.name?.toLowerCase().includes(searchQuery.toLowerCase());
+      product.nameAr
+        ?.toLowerCase()
+        .includes(normalizedSearch) ||
+      product.name
+        ?.toLowerCase()
+        .includes(normalizedSearch);
 
     return matchesCategory && matchesSearch;
   });
 
   return (
-    <main className="min-h-screen pt-24 pb-16 bg-[#FFF8F3]" dir="rtl">
+    <main
+      className="min-h-screen pt-24 pb-16 bg-[#FFF8F3]"
+      dir="rtl"
+    >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 
         {/* الهيدر وشريط البحث */}
@@ -82,6 +134,7 @@ export default function Menu() {
 
             {searchQuery && (
               <button
+                type="button"
                 onClick={() => setSearchQuery('')}
                 className="absolute top-1/2 -translate-y-1/2 left-4 text-xs font-bold text-gray-400 hover:text-red-500"
               >
@@ -111,31 +164,44 @@ export default function Menu() {
         )}
 
         {/* Category Filter Pills */}
-        <div className="flex items-center justify-start sm:justify-center gap-2 overflow-x-auto pb-4 mb-8 scrollbar-hide">
-          {categories.map((cat) => {
-            const isActive = selectedCategory === cat.id;
+        {categoriesLoading ? (
+          <div className="flex justify-center mb-8">
+            <div className="rounded-full bg-white px-6 py-3 text-sm font-bold text-gray-400">
+              جاري تحميل التصنيفات...
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-start sm:justify-center gap-2 overflow-x-auto pb-4 mb-8 scrollbar-hide">
+            {categories.map((category) => {
+              const isActive =
+                selectedCategory === category.id;
 
-            return (
-              <button
-                key={cat.id}
-                onClick={() => setSelectedCategory(cat.id)}
-                className={`px-5 py-2.5 rounded-full font-black text-xs sm:text-sm whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
-                  isActive
-                    ? 'bg-[#FF6600] text-white shadow-md scale-105'
-                    : 'bg-white text-[#3D2314] border border-orange-100 hover:bg-orange-50'
-                }`}
-              >
-                <span>{cat.icon}</span>
-                <span>{cat.nameAr}</span>
-              </button>
-            );
-          })}
-        </div>
+              return (
+                <button
+                  type="button"
+                  key={category.id}
+                  onClick={() =>
+                    setSelectedCategory(category.id)
+                  }
+                  className={`px-5 py-2.5 rounded-full font-black text-xs sm:text-sm whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
+                    isActive
+                      ? 'bg-[#FF6600] text-white shadow-md scale-105'
+                      : 'bg-white text-[#3D2314] border border-orange-100 hover:bg-orange-50'
+                  }`}
+                >
+                  <span>{category.icon}</span>
+                  <span>{category.nameAr}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Loading */}
         {loading && (
           <div className="text-center py-16">
             <div className="text-4xl mb-3">☕</div>
+
             <p className="font-bold text-[#3D2314]">
               جاري تحميل المنتجات...
             </p>
@@ -157,34 +223,39 @@ export default function Menu() {
           </div>
         )}
 
+        {/* No Results */}
+        {!loading &&
+          !error &&
+          filteredProducts.length === 0 && (
+            <div className="text-center py-16 bg-white rounded-3xl border border-orange-100 max-w-md mx-auto">
+              <span className="text-4xl">🔍</span>
+
+              <h3 className="text-lg font-black text-[#3D2314] mt-2">
+                لا توجد نتائج بحث
+              </h3>
+
+              <p className="text-xs text-gray-500 mt-1">
+                جرب البحث باسم منتج آخر
+              </p>
+            </div>
+          )}
+
         {/* Products Grid */}
-        {!loading && !error && filteredProducts.length === 0 && (
-          <div className="text-center py-16 bg-white rounded-3xl border border-orange-100 max-w-md mx-auto">
-            <span className="text-4xl">🔍</span>
-
-            <h3 className="text-lg font-black text-[#3D2314] mt-2">
-              لا توجد نتائج بحث
-            </h3>
-
-            <p className="text-xs text-gray-500 mt-1">
-              جرب البحث باسم منتج آخر
-            </p>
-          </div>
-        )}
-
-        {!loading && !error && filteredProducts.length > 0 && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {filteredProducts.map((product, index) => (
-              <ProductCard
-                key={product.id}
-                product={product}
-                index={index}
-              />
-            ))}
-          </div>
-        )}
-
+        {!loading &&
+          !error &&
+          filteredProducts.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {filteredProducts.map((product, index) => (
+                <ProductCard
+                  key={product.id}
+                  product={product}
+                  index={index}
+                />
+              ))}
+            </div>
+          )}
       </div>
     </main>
   );
 }
+

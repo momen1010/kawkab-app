@@ -275,7 +275,7 @@ const products = [
     description:
       'Special signature dessert with extra cream & toppings',
     descriptionAr:
-      'قشطوطة الدمار المار الخاصة بكوكب السعادة',
+      'قشطوطة الدمار المار الخاصة بهابي درينك',
     price: 5,
     category: 'waffle',
     image: '/src/assets/waffel-6.jpeg',

@@ -352,7 +352,7 @@ export default function AdminDashboard() {
               </h1>
 
               <p className="text-gray-500 mt-2">
-                إدارة طلبات كوكب السعادة
+                إدارة طلبات هابي درينك
               </p>
             </div>
 
